@@ -1,0 +1,28 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: verifit-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: verifit1234
+      MYSQL_DATABASE: verifit
+    ports:
+      - "3306:3306"
+    volumes:
+      - verifit_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pverifit1234"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    container_name: verifit-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  verifit_mysql_data:
