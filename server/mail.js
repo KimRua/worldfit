@@ -8,7 +8,7 @@ const mailPort = Number(process.env.MAIL_PORT ?? 1025);
 const mailSecure = process.env.MAIL_SECURE === 'true';
 const mailUser = process.env.MAIL_USER ?? '';
 const mailPassword = process.env.MAIL_PASSWORD ?? '';
-const mailFrom = process.env.MAIL_FROM ?? 'Verifit <no-reply@verifit.local>';
+const mailFrom = process.env.MAIL_FROM ?? 'WorldFit <no-reply@WorldFit.local>';
 const mailInboxUrl = process.env.MAIL_INBOX_URL ?? '';
 
 let transporter;
@@ -34,9 +34,9 @@ export async function sendCompanyVerificationEmail({
   const info = await getTransporter().sendMail({
     from: mailFrom,
     to: companyEmail,
-    subject: '[Verifit] 기업 이메일 인증코드',
+    subject: '[WorldFit] 기업 이메일 인증코드',
     text: [
-      'Verifit 기업회원가입 이메일 인증코드입니다.',
+      'WorldFit 기업회원가입 이메일 인증코드입니다.',
       '',
       `인증코드: ${verificationCode}`,
       `유효시간: ${expiresInMinutes}분`,
@@ -45,7 +45,7 @@ export async function sendCompanyVerificationEmail({
     ].join('\n'),
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-        <h2 style="margin-bottom: 12px;">Verifit 기업 이메일 인증</h2>
+        <h2 style="margin-bottom: 12px;">WorldFit 기업 이메일 인증</h2>
         <p style="margin: 0 0 16px;">아래 인증코드를 회원가입 화면에 입력해주세요.</p>
         <div style="display: inline-block; padding: 14px 20px; border-radius: 12px; background: #f3f4f6; font-size: 28px; font-weight: 700; letter-spacing: 0.18em;">
           ${verificationCode}
@@ -70,9 +70,9 @@ export async function sendCandidateVerificationEmail({
   const info = await getTransporter().sendMail({
     from: mailFrom,
     to: candidateEmail,
-    subject: '[Verifit] 개인 회원가입 이메일 인증코드',
+    subject: '[WorldFit] 개인 회원가입 이메일 인증코드',
     text: [
-      'Verifit 개인회원가입 이메일 인증코드입니다.',
+      'WorldFit 개인회원가입 이메일 인증코드입니다.',
       '',
       `인증코드: ${verificationCode}`,
       `유효시간: ${expiresInMinutes}분`,
@@ -81,7 +81,7 @@ export async function sendCandidateVerificationEmail({
     ].join('\n'),
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-        <h2 style="margin-bottom: 12px;">Verifit 개인 이메일 인증</h2>
+        <h2 style="margin-bottom: 12px;">WorldFit 개인 이메일 인증</h2>
         <p style="margin: 0 0 16px;">아래 인증코드를 회원가입 화면에 입력해주세요.</p>
         <div style="display: inline-block; padding: 14px 20px; border-radius: 12px; background: #f3f4f6; font-size: 28px; font-weight: 700; letter-spacing: 0.18em;">
           ${verificationCode}
@@ -106,9 +106,9 @@ export async function sendCandidateLoginEmail({
   const info = await getTransporter().sendMail({
     from: mailFrom,
     to: candidateEmail,
-    subject: '[Verifit] 개인 로그인 인증코드',
+    subject: '[WorldFit] 개인 로그인 인증코드',
     text: [
-      'Verifit 개인 로그인 인증코드입니다.',
+      'WorldFit 개인 로그인 인증코드입니다.',
       '',
       `인증코드: ${verificationCode}`,
       `유효시간: ${expiresInMinutes}분`,
@@ -117,7 +117,7 @@ export async function sendCandidateLoginEmail({
     ].join('\n'),
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-        <h2 style="margin-bottom: 12px;">Verifit 개인 로그인</h2>
+        <h2 style="margin-bottom: 12px;">WorldFit 개인 로그인</h2>
         <p style="margin: 0 0 16px;">아래 인증코드를 로그인 화면에 입력해주세요.</p>
         <div style="display: inline-block; padding: 14px 20px; border-radius: 12px; background: #f3f4f6; font-size: 28px; font-weight: 700; letter-spacing: 0.18em;">
           ${verificationCode}
@@ -142,9 +142,9 @@ export async function sendCompanyUnlockEmail({
   const info = await getTransporter().sendMail({
     from: mailFrom,
     to: companyEmail,
-    subject: '[Verifit] 계정 잠금 해제 인증코드',
+    subject: '[WorldFit] 계정 잠금 해제 인증코드',
     text: [
-      'Verifit 기업 계정 잠금 해제 인증코드입니다.',
+      'WorldFit 기업 계정 잠금 해제 인증코드입니다.',
       '',
       `인증코드: ${verificationCode}`,
       `유효시간: ${expiresInMinutes}분`,
@@ -153,7 +153,7 @@ export async function sendCompanyUnlockEmail({
     ].join('\n'),
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-        <h2 style="margin-bottom: 12px;">Verifit 계정 잠금 해제</h2>
+        <h2 style="margin-bottom: 12px;">WorldFit 계정 잠금 해제</h2>
         <p style="margin: 0 0 16px;">아래 인증코드를 입력하면 로그인 잠금이 해제됩니다.</p>
         <div style="display: inline-block; padding: 14px 20px; border-radius: 12px; background: #f3f4f6; font-size: 28px; font-weight: 700; letter-spacing: 0.18em;">
           ${verificationCode}
