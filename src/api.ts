@@ -1,7 +1,14 @@
+import type { Tokens } from '@worldcoin/minikit-js/commands';
+
 export type CompanySessionUser = {
   id: number;
   companyName: string;
   companyEmail: string;
+};
+
+export type AdminSessionUser = {
+  id: number;
+  username: string;
 };
 
 export type CandidateSessionUser = {
@@ -15,6 +22,277 @@ export type CandidateVerificationResponse = {
   retryAfterSeconds?: number;
   expiresInSeconds?: number;
   devInboxUrl?: string;
+};
+
+export type CompanyDashboardSummaryCard = {
+  label: string;
+  value: string;
+  detail: string;
+};
+
+export type CompanyDashboardSession = {
+  id: string;
+  name: string;
+  type: string;
+  applicants: string;
+  progress: number;
+  fraudCount: number | null;
+};
+
+export type CompanyVerificationType = 'company' | 'organizer';
+export type CompanyVerificationCountry = 'KR' | 'US' | 'JP' | 'SG';
+
+export type CompanyVerificationForm = {
+  country: CompanyVerificationCountry;
+  verificationType: CompanyVerificationType;
+  companyBusinessCertificateFileName: string;
+  companyCorporateSealCertificateFileName: string;
+  companyOfficialLetterFileName: string;
+  organizerBusinessCertificateFileName: string;
+  organizerUsageSealCertificateFileName: string;
+  organizerOfficialLetterFileName: string;
+};
+
+export type CompanyPortalJobListing = {
+  id: string;
+  title: string;
+  type: string;
+  period: string;
+  applicants: string;
+  status: string;
+  statusTone: 'dark' | 'danger' | 'muted' | 'soft';
+  fraudCount: number | null;
+};
+
+export type CompanyBlindSelectionCard = {
+  id: string;
+  type: 'recruiting' | 'contest' | 'audition' | 'education';
+  status: 'open' | 'closing';
+  badge: string;
+  title: string;
+};
+
+export type CompanyBlindRankingCandidate = {
+  id: string;
+  anonymousId: string;
+  overallScore: number;
+  humanVerified: boolean;
+  metrics: {
+    label: string;
+    score: number;
+  }[];
+  integrityScore: number;
+  selected: boolean;
+};
+
+export type CompanyFraudCaseStatus = 'pending' | 'investigating' | 'resolved' | 'dismissed';
+export type CompanyFraudSeverity = 'high' | 'medium' | 'low';
+
+export type CompanyFraudCase = {
+  id: string;
+  title: string;
+  detailId: string;
+  issue: string;
+  severity: CompanyFraudSeverity;
+  confidence: number;
+  timestamp: string;
+  status: CompanyFraudCaseStatus;
+  evidenceTitle: string;
+  evidences: string[];
+  behaviorLogs: string[];
+};
+
+export type CompanyCreditHistoryItem = {
+  timestamp: string;
+  amount: string;
+};
+
+export type CompanyCreditPaymentOption = {
+  key: 'WLD' | 'USDC' | 'USDT';
+  label: string;
+  worldTokenSymbol: Tokens | null;
+  tokenPerUsd: number;
+};
+
+export type CompanyCreditChargeStatus = 'ready' | 'pending' | 'confirmed' | 'failed' | 'expired';
+export type CompanyCreditPaymentChannel = 'mini_app' | 'web_deposit';
+
+export type CompanyCreditQuote = {
+  paymentChannel: CompanyCreditPaymentChannel;
+  paymentTokenKey: CompanyCreditPaymentOption['key'];
+  creditUsd: number;
+  tokenAmountDisplay: string;
+  tokenAmountAtomic: string;
+  tokenPriceUsd: number;
+  tokenPerUsd: number;
+  fetchedAt: string;
+};
+
+export type CompanyCreditCharge = {
+  id: string;
+  paymentChannel: CompanyCreditPaymentChannel;
+  reference: string;
+  status: CompanyCreditChargeStatus;
+  creditUsd: number;
+  receiverAddress: string;
+  paymentToken: {
+    key: CompanyCreditPaymentOption['key'];
+    label: string;
+    worldTokenSymbol: Tokens | null;
+    contractAddress: string | null;
+    amountDisplay: string;
+    amountAtomic: string;
+    decimals: number;
+  };
+  transactionId: string | null;
+  transactionHash: string | null;
+  payerWalletAddress: string | null;
+  failureReason: string | null;
+  depositAddress: string | null;
+  receivedTokenAmountDisplay: string | null;
+  quotedTokenPriceUsd: number | null;
+  quotedAmountUsd: number | null;
+  creditedUsd: number | null;
+  detectedAt: string | null;
+  createdAt: string | null;
+  expiresAt: string | null;
+  confirmedAt: string | null;
+};
+
+export type AdminDashboard = {
+  summary: {
+    totalBalanceUsd: number;
+    totalChargedUsd: number;
+    pendingWebDepositCount: number;
+    companyCount: number;
+  };
+  balances: {
+    companyId: number;
+    companyName: string;
+    companyEmail: string;
+    balanceUsd: number;
+    monthlyUsageUsd: number;
+    updatedAt: string | null;
+  }[];
+  deposits: {
+    id: string;
+    companyName: string;
+    companyEmail: string;
+    paymentChannel: CompanyCreditPaymentChannel;
+    status: CompanyCreditChargeStatus;
+    paymentTokenKey: CompanyCreditPaymentOption['key'];
+    requestedCreditUsd: number;
+    expectedTokenAmountDisplay: string;
+    receivedTokenAmountDisplay: string | null;
+    quotedAmountUsd: number | null;
+    creditedAmountUsd: number | null;
+    transactionHash: string | null;
+    reference: string;
+    createdAt: string | null;
+    confirmedAt: string | null;
+  }[];
+};
+
+export type CompanyAgentCatalogItem = {
+  id: string;
+  icon: string;
+  name: string;
+  billingLabel: string;
+  description: string;
+  selected: boolean;
+  weight: number;
+  locked: boolean;
+};
+
+export type CompanyEvaluationCriteria = {
+  focus: string;
+  strengths: string;
+  risks: string;
+};
+
+export type CompanyPortalBootstrap = {
+  dashboard: {
+    summaryCards: CompanyDashboardSummaryCard[];
+    sessions: CompanyDashboardSession[];
+    alerts: string[];
+    wldUsage: number[];
+    pendingFraudCount: number;
+  };
+  jobs: {
+    statusFilters: {
+      label: string;
+      active?: boolean;
+    }[];
+    items: CompanyPortalJobListing[];
+  };
+  blind: {
+    cards: CompanyBlindSelectionCard[];
+  };
+  fraud: {
+    filters: {
+      key: CompanyFraudCaseStatus;
+      label: string;
+    }[];
+    cases: CompanyFraudCase[];
+  };
+  credit: {
+    balanceUsd: number;
+    monthlyUsageUsd: number;
+    walletAddress: string;
+    exchangeRate: number;
+    miniAppPaymentsEnabled: boolean;
+    webDepositEnabled: boolean;
+    minRechargeUsd: number;
+    maxRechargeUsd: number;
+    miniAppPaymentOptions: CompanyCreditPaymentOption[];
+    webDepositOptions: CompanyCreditPaymentOption[];
+    history: CompanyCreditHistoryItem[];
+  };
+  agentCatalog: CompanyAgentCatalogItem[];
+  settings: {
+    companyName: string;
+    companyEmail: string;
+    contact: string;
+    language: string;
+    verificationForm: CompanyVerificationForm;
+  };
+};
+
+export type CompanyJobReportResponse = {
+  job: CompanyPortalJobListing;
+  summary: {
+    badge: string;
+    title: string;
+    description: string;
+  };
+  histogram: {
+    label: string;
+    height: number;
+  }[];
+  topCandidates: {
+    rank: number;
+    id: string;
+    score: number;
+  }[];
+  agentScores: {
+    label: string;
+    score: number;
+    bandStart: number;
+    bandWidth: number;
+  }[];
+  improvements: {
+    label: string;
+    count: number;
+    tone: 'danger' | 'dark';
+  }[];
+};
+
+export type CompanyBlindRankingResponse = {
+  blindCard: CompanyBlindSelectionCard;
+  candidates: CompanyBlindRankingCandidate[];
+  summary: {
+    description: string;
+  };
 };
 
 export type WorldIdEnvironment = 'production' | 'staging';
@@ -54,7 +332,7 @@ export class ApiError extends Error {
 }
 
 type ApiRequestOptions = {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT';
   body?: unknown;
 };
 
@@ -86,6 +364,7 @@ export function fetchCurrentSessionUser() {
   return request<{
     companyUser?: CompanySessionUser | null;
     candidateUser?: CandidateSessionUser | null;
+    adminUser?: AdminSessionUser | null;
   }>('/api/auth/me');
 }
 
@@ -258,5 +537,164 @@ export function loginCompany(input: {
 export function logoutCompany() {
   return request<{ message: string }>('/api/auth/logout', {
     method: 'POST',
+  });
+}
+
+export function loginAdmin(input: {
+  username: string;
+  password: string;
+}) {
+  return request<{ adminUser: AdminSessionUser; message: string }>('/api/auth/admin/login', {
+    method: 'POST',
+    body: input,
+  });
+}
+
+export function fetchAdminDashboard() {
+  return request<AdminDashboard>('/api/admin/dashboard');
+}
+
+export function changeAdminPassword(input: {
+  currentPassword: string;
+  nextPassword: string;
+}) {
+  return request<{ message: string }>('/api/admin/password', {
+    method: 'PUT',
+    body: input,
+  });
+}
+
+export function fetchCompanyPortalBootstrap() {
+  return request<CompanyPortalBootstrap>('/api/company/portal/bootstrap');
+}
+
+export function saveCompanyPortalSettings(input: {
+  companyName: string;
+  contact: string;
+  language: string;
+  verificationForm: CompanyVerificationForm;
+}) {
+  return request<{
+    message: string;
+    companyUser: CompanySessionUser;
+    settings: CompanyPortalBootstrap['settings'];
+  }>('/api/company/settings', {
+    method: 'PUT',
+    body: input,
+  });
+}
+
+export function createCompanyCreditCharge(input: {
+  creditUsd: number;
+  paymentTokenKey: CompanyCreditPaymentOption['key'];
+  paymentChannel: CompanyCreditPaymentChannel;
+}) {
+  return request<{ message: string; charge: CompanyCreditCharge }>('/api/company/credits/charges', {
+    method: 'POST',
+    body: input,
+  });
+}
+
+export function fetchCompanyCreditCharge(chargeId: string) {
+  return request<{ message: string; charge: CompanyCreditCharge }>(`/api/company/credits/charges/${chargeId}`);
+}
+
+export function fetchCompanyCreditQuote(input: {
+  creditUsd: number;
+  paymentTokenKey: CompanyCreditPaymentOption['key'];
+  paymentChannel: CompanyCreditPaymentChannel;
+}) {
+  const params = new URLSearchParams({
+    creditUsd: String(input.creditUsd),
+    paymentTokenKey: input.paymentTokenKey,
+    paymentChannel: input.paymentChannel,
+  });
+
+  return request<{ quote: CompanyCreditQuote }>(`/api/company/credits/quote?${params.toString()}`);
+}
+
+export function confirmCompanyCreditCharge(input: {
+  chargeId: string;
+  transactionId: string;
+}) {
+  return request<{ message: string; charge: CompanyCreditCharge }>(
+    `/api/company/credits/charges/${input.chargeId}/confirm`,
+    {
+      method: 'POST',
+      body: { transactionId: input.transactionId },
+    },
+  );
+}
+
+export function createCompanyPortalJob(input: {
+  sessionType: CompanyBlindSelectionCard['type'];
+  form: {
+    title: string;
+    description: string;
+    detailedDescription: string;
+    startDate: string;
+    endDate: string;
+    capacity: string;
+    capacityDisplay: 'exact' | 'masked';
+    visibilityScope: string;
+    eligibleAge: 'minor' | 'adult' | 'all';
+    eligibleCountries: string[];
+  };
+  processes: {
+    id: number;
+    name: string;
+    content: string;
+    submissionMethod: string;
+  }[];
+  agents: CompanyAgentCatalogItem[];
+  evaluationCriteria: CompanyEvaluationCriteria;
+  expectedApplicants: string;
+}) {
+  return request<{
+    message: string;
+    job: CompanyPortalJobListing;
+    blindCard: CompanyBlindSelectionCard;
+  }>('/api/company/jobs', {
+    method: 'POST',
+    body: input,
+  });
+}
+
+export function fetchCompanyJobReport(jobId: string) {
+  return request<CompanyJobReportResponse>(`/api/company/jobs/${jobId}/report`);
+}
+
+export function fetchCompanyBlindRanking(jobId: string) {
+  return request<CompanyBlindRankingResponse>(`/api/company/blind/${jobId}/ranking`);
+}
+
+export function setCompanyBlindRankingSelection(
+  jobId: string,
+  candidateId: string,
+  selected: boolean,
+) {
+  return request<{
+    message: string;
+    selectedCount: number;
+    candidates: CompanyBlindRankingCandidate[];
+  }>(`/api/company/blind/${jobId}/candidates/${candidateId}/selection`, {
+    method: 'PUT',
+    body: { selected },
+  });
+}
+
+export function sendCompanyBlindRankingNotifications(jobId: string) {
+  return request<{ message: string; selectedCount: number }>(`/api/company/blind/${jobId}/notify`, {
+    method: 'POST',
+  });
+}
+
+export function updateCompanyFraudCase(input: {
+  caseId: string;
+  status: Extract<CompanyFraudCaseStatus, 'resolved' | 'dismissed'>;
+}) {
+  return request<{ message: string }>(`/api/company/fraud-cases/${input.caseId}/status`, {
+    method: 'PUT',
+    body: { status: input.status },
   });
 }

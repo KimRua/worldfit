@@ -5,7 +5,31 @@ import express from 'express';
 import session from 'express-session';
 import { hashSignal } from '@worldcoin/idkit/hashing';
 import { signRequest } from '@worldcoin/idkit/signing';
+import {
+  changeAdminPassword,
+  getAdminDashboard,
+  getAdminUserByUsername,
+  recordAdminLogin,
+  toAdminSessionUser,
+} from './admin.js';
 import { ensureDatabase, pool } from './db.js';
+import {
+  confirmCompanyCreditCharge,
+  createCompanyCreditCharge,
+  getCompanyCreditCharge,
+  getCompanyCreditQuote,
+  startCompanyCreditMonitor,
+} from './company-credit.js';
+import {
+  createCompanyJob,
+  getCompanyBlindRanking,
+  getCompanyJobReport,
+  getCompanyPortalBootstrap,
+  notifyCompanyBlindCandidates,
+  updateCompanyBlindCandidateSelection,
+  updateCompanyFraudCaseStatus,
+  updateCompanySettings,
+} from './company-portal.js';
 import {
   sendCandidateLoginEmail,
   sendCandidateVerificationEmail,
@@ -74,6 +98,32 @@ function getCandidateSessionUser(req) {
   return req.session.candidateUser ?? null;
 }
 
+function getAdminSessionUser(req) {
+  return req.session.adminUser ?? null;
+}
+
+function requireCompanySessionUser(req, res) {
+  const companyUser = getCompanySessionUser(req);
+
+  if (!companyUser) {
+    res.status(401).json({ message: '기업 로그인 세션이 필요합니다.' });
+    return null;
+  }
+
+  return companyUser;
+}
+
+function requireAdminSessionUser(req, res) {
+  const adminUser = getAdminSessionUser(req);
+
+  if (!adminUser) {
+    res.status(401).json({ message: '관리자 로그인 세션이 필요합니다.' });
+    return null;
+  }
+
+  return adminUser;
+}
+
 function setCompanySessionUser(req, user) {
   req.session.companyUser = user;
 }
@@ -82,12 +132,20 @@ function setCandidateSessionUser(req, user) {
   req.session.candidateUser = user;
 }
 
+function setAdminSessionUser(req, user) {
+  req.session.adminUser = user;
+}
+
 function clearCompanySessionUser(req) {
   delete req.session.companyUser;
 }
 
 function clearCandidateSessionUser(req) {
   delete req.session.candidateUser;
+}
+
+function clearAdminSessionUser(req) {
+  delete req.session.adminUser;
 }
 
 function isValidEmail(value) {
@@ -246,13 +304,325 @@ app.get('/api/world-id/config', (_req, res) => {
 app.get('/api/auth/me', (req, res) => {
   const companyUser = getCompanySessionUser(req);
   const candidateUser = getCandidateSessionUser(req);
+  const adminUser = getAdminSessionUser(req);
 
-  if (!companyUser && !candidateUser) {
+  if (!companyUser && !candidateUser && !adminUser) {
     res.status(401).json({ message: '로그인이 필요합니다.' });
     return;
   }
 
-  res.json({ companyUser, candidateUser });
+  res.json({ companyUser, candidateUser, adminUser });
+});
+
+app.post('/api/auth/admin/login', async (req, res) => {
+  const username = req.body.username?.trim() ?? '';
+  const password = req.body.password ?? '';
+
+  if (!username) {
+    res.status(400).json({ message: '아이디를 입력해주세요.' });
+    return;
+  }
+
+  if (!password) {
+    res.status(400).json({ message: '비밀번호를 입력해주세요.' });
+    return;
+  }
+
+  try {
+    const admin = await getAdminUserByUsername(username);
+
+    if (!admin) {
+      res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+      return;
+    }
+
+    const passwordMatched = await bcrypt.compare(password, admin.password_hash);
+
+    if (!passwordMatched) {
+      res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+      return;
+    }
+
+    const adminUser = toAdminSessionUser(admin);
+    await recordAdminLogin(adminUser.id);
+    clearCompanySessionUser(req);
+    clearCandidateSessionUser(req);
+    setAdminSessionUser(req, adminUser);
+
+    res.json({
+      message: '관리자 로그인되었습니다.',
+      adminUser,
+    });
+  } catch (error) {
+    console.error('Admin login failed:', error);
+    res.status(500).json({ message: '관리자 로그인 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+app.get('/api/company/portal/bootstrap', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const portal = await getCompanyPortalBootstrap(companyUser);
+    res.json(portal);
+  } catch (error) {
+    console.error('Company portal bootstrap failed:', error);
+    res.status(500).json({ message: '회사 포털 데이터를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+app.post('/api/company/credits/charges', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await createCompanyCreditCharge(companyUser, req.body ?? {});
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Company credit charge create failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '크레딧 충전 요청을 생성하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.get('/api/company/credits/charges/:chargeId', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await getCompanyCreditCharge(companyUser, String(req.params.chargeId ?? ''));
+    res.json(result);
+  } catch (error) {
+    console.error('Company credit charge fetch failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '크레딧 충전 상태를 조회하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.get('/api/company/credits/quote', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await getCompanyCreditQuote(companyUser, {
+      creditUsd: req.query.creditUsd,
+      paymentTokenKey: req.query.paymentTokenKey,
+      paymentChannel: req.query.paymentChannel,
+    });
+    res.json(result);
+  } catch (error) {
+    console.error('Company credit quote fetch failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '실시간 시세를 조회하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.post('/api/company/credits/charges/:chargeId/confirm', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await confirmCompanyCreditCharge(
+      companyUser,
+      String(req.params.chargeId ?? ''),
+      req.body ?? {},
+    );
+    res.json(result);
+  } catch (error) {
+    console.error('Company credit charge confirm failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '크레딧 충전을 확인하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.put('/api/company/settings', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await updateCompanySettings(companyUser, req.body ?? {});
+    setCompanySessionUser(req, result.companyUser);
+    res.json({
+      message: '설정이 저장되었습니다.',
+      companyUser: result.companyUser,
+      settings: result.settings,
+    });
+  } catch (error) {
+    console.error('Company settings update failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '설정 저장 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.post('/api/company/jobs', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await createCompanyJob(companyUser, req.body ?? {});
+    res.status(201).json({
+      message: '공고가 생성되었습니다.',
+      job: result.job,
+      blindCard: result.blindCard,
+    });
+  } catch (error) {
+    console.error('Company job create failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '공고 생성 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.get('/api/company/jobs/:jobId/report', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const report = await getCompanyJobReport(companyUser, req.params.jobId);
+
+    if (!report) {
+      res.status(404).json({ message: '공고 리포트를 찾을 수 없습니다.' });
+      return;
+    }
+
+    res.json(report);
+  } catch (error) {
+    console.error('Company report fetch failed:', error);
+    res.status(500).json({ message: '공고 리포트를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+app.get('/api/company/blind/:jobId/ranking', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const ranking = await getCompanyBlindRanking(companyUser, req.params.jobId);
+
+    if (!ranking) {
+      res.status(404).json({ message: '블라인드 랭킹 데이터를 찾을 수 없습니다.' });
+      return;
+    }
+
+    res.json(ranking);
+  } catch (error) {
+    console.error('Company blind ranking fetch failed:', error);
+    res.status(500).json({ message: '블라인드 랭킹을 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+app.put('/api/company/blind/:jobId/candidates/:candidateId/selection', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await updateCompanyBlindCandidateSelection(
+      companyUser,
+      req.params.jobId,
+      req.params.candidateId,
+      req.body?.selected === true,
+    );
+
+    if (!result) {
+      res.status(404).json({ message: '지원자 선택 데이터를 찾을 수 없습니다.' });
+      return;
+    }
+
+    res.json({
+      message: '선택 상태가 저장되었습니다.',
+      selectedCount: result.selectedCount,
+      candidates: result.candidates,
+    });
+  } catch (error) {
+    console.error('Company blind selection update failed:', error);
+    res.status(500).json({ message: '선택 상태를 저장하는 중 오류가 발생했습니다.' });
+  }
+});
+
+app.post('/api/company/blind/:jobId/notify', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await notifyCompanyBlindCandidates(companyUser, req.params.jobId);
+
+    if (!result) {
+      res.status(404).json({ message: '알림 대상을 찾을 수 없습니다.' });
+      return;
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Company blind notify failed:', error);
+    res.status(500).json({ message: '알림 발송 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+app.put('/api/company/fraud-cases/:caseId/status', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const updated = await updateCompanyFraudCaseStatus(
+      companyUser,
+      req.params.caseId,
+      req.body?.status,
+    );
+
+    if (!updated) {
+      res.status(404).json({ message: '부정 케이스를 찾을 수 없습니다.' });
+      return;
+    }
+
+    res.json({ message: '부정 케이스 상태가 업데이트되었습니다.' });
+  } catch (error) {
+    console.error('Company fraud case update failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '부정 케이스 상태 변경 중 오류가 발생했습니다.',
+    });
+  }
 });
 
 app.post('/api/auth/candidate/verification/send', async (req, res) => {
@@ -627,6 +997,7 @@ app.post('/api/auth/candidate/login/verify', async (req, res) => {
     await pool.execute('DELETE FROM candidate_email_verifications WHERE email = ?', [email]);
 
     clearCompanySessionUser(req);
+    clearAdminSessionUser(req);
     setCandidateSessionUser(req, candidateUser);
 
     res.json({
@@ -867,6 +1238,7 @@ app.post('/api/world-id/login/verify', async (req, res) => {
     }
 
     clearCompanySessionUser(req);
+    clearAdminSessionUser(req);
     setCandidateSessionUser(req, candidateUser);
 
     res.json({
@@ -1250,6 +1622,7 @@ app.post('/api/auth/company/signup', async (req, res) => {
     ]);
 
     clearCandidateSessionUser(req);
+    clearAdminSessionUser(req);
     setCompanySessionUser(req, companyUser);
 
     res.status(201).json({
@@ -1351,6 +1724,7 @@ app.post('/api/auth/company/login', async (req, res) => {
 
     const companyUser = toCompanySessionUser(company);
     clearCandidateSessionUser(req);
+    clearAdminSessionUser(req);
     setCompanySessionUser(req, companyUser);
 
     res.json({
@@ -1600,9 +1974,48 @@ app.post('/api/auth/company/unlock/verify', async (req, res) => {
   }
 });
 
+app.get('/api/admin/dashboard', async (req, res) => {
+  const adminUser = requireAdminSessionUser(req, res);
+
+  if (!adminUser) {
+    return;
+  }
+
+  try {
+    const dashboard = await getAdminDashboard();
+    res.json(dashboard);
+  } catch (error) {
+    console.error('Admin dashboard fetch failed:', error);
+    res.status(500).json({ message: '관리자 대시보드를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+app.put('/api/admin/password', async (req, res) => {
+  const adminUser = requireAdminSessionUser(req, res);
+
+  if (!adminUser) {
+    return;
+  }
+
+  try {
+    await changeAdminPassword(
+      adminUser.id,
+      String(req.body.currentPassword ?? ''),
+      String(req.body.nextPassword ?? ''),
+    );
+    res.json({ message: '관리자 비밀번호가 변경되었습니다.' });
+  } catch (error) {
+    console.error('Admin password change failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '관리자 비밀번호를 변경하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
 app.post('/api/auth/logout', (req, res) => {
   clearCompanySessionUser(req);
   clearCandidateSessionUser(req);
+  clearAdminSessionUser(req);
   req.session.destroy((error) => {
     if (error) {
       console.error('Logout failed:', error);
@@ -1617,6 +2030,7 @@ app.post('/api/auth/logout', (req, res) => {
 
 ensureDatabase()
   .then(() => {
+    startCompanyCreditMonitor();
     app.listen(port, () => {
       console.log(`Verifit auth server listening on http://localhost:${port}`);
     });
