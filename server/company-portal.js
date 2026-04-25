@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { buildDefaultCompanyAgentCatalogItems } from './company-agent-catalog.js';
+import {
+  CompanyAgentEvaluationError,
+  evaluateSubmissionWithCompanyAgent,
+  getSupportedCompanyEvaluationAgentIds,
+} from './company-agent-evaluator.js';
 import { getCompanyCreditBootstrapConfig, getCompanyCreditProfileDefaults } from './company-credit.js';
 import { pool } from './db.js';
 
@@ -37,6 +42,28 @@ const defaultEvaluationCriteria = {
   strengths: '',
   risks: '',
 };
+
+const supportedEvaluationAgentIdSet = new Set(getSupportedCompanyEvaluationAgentIds());
+const scoredMetricAgentIds = ['technical', 'reasoning', 'communication', 'creativity'];
+const reportAgentDisplayLabels = {
+  technical: 'Technical',
+  reasoning: 'Reasoning',
+  communication: 'Communication',
+  creativity: 'Creativity',
+  integrity: 'Integrity',
+};
+const blindMetricPrefixes = {
+  technical: 'Tech',
+  reasoning: 'Reason',
+  communication: 'Comm',
+  creativity: 'Creat',
+};
+const blindMetricLabelMatchers = [
+  ['technical', /^tech/i],
+  ['reasoning', /^reason/i],
+  ['communication', /^comm/i],
+  ['creativity', /^creat/i],
+];
 
 const defaultUsageSeries = [
   72, 49, 55, 56, 50, 40, 31, 50, 24, 27,
@@ -577,6 +604,75 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function clampNumber(value, min, max, fallback = min) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function clampInteger(value, min, max, fallback = min) {
+  return Math.round(clampNumber(value, min, max, fallback));
+}
+
+function toCompactText(value, limit = 240) {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+}
+
+function toTextList(values, itemLimit = 160, listLimit = 5) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values
+    .map((value) => toCompactText(value, itemLimit))
+    .filter(Boolean)
+    .slice(0, listLimit);
+}
+
+function normalizeImprovementTag(value) {
+  const trimmed = toCompactText(value, 48).replace(/^#+/, '').trim();
+  return trimmed ? `#${trimmed}` : '';
+}
+
+function getBlindMetricLabel(agentId, weight) {
+  const prefix = blindMetricPrefixes[agentId] ?? 'Metric';
+  const normalizedWeight = clampInteger(weight, 0, 100, 0);
+
+  return normalizedWeight > 0 ? `${prefix} ${normalizedWeight}%` : prefix;
+}
+
+function getReportAgentLabel(agentId) {
+  return reportAgentDisplayLabels[agentId] ?? agentId;
+}
+
+function normalizeMetricAgentId(metric) {
+  const directAgentId = String(metric?.agentId ?? '').trim();
+
+  if (scoredMetricAgentIds.includes(directAgentId)) {
+    return directAgentId;
+  }
+
+  const metricLabel = String(metric?.label ?? '').trim().toLowerCase();
+
+  for (const [agentId, pattern] of blindMetricLabelMatchers) {
+    if (pattern.test(metricLabel)) {
+      return agentId;
+    }
+  }
+
+  return '';
+}
+
 function pad(value) {
   return String(value).padStart(2, '0');
 }
@@ -634,42 +730,44 @@ function buildReportTopCandidates(candidates) {
 }
 
 function buildReportAgentScores(candidates) {
-  const metricLabels = [
-    { label: 'Technical', source: 'Tech 35%' },
-    { label: 'Reasoning', source: 'Reason 25%' },
-    { label: 'Communication', source: 'Comm 25%' },
-    { label: 'Creativity', source: 'Creat 10%' },
-  ];
+  const metricValues = new Map(scoredMetricAgentIds.map((agentId) => [agentId, []]));
 
-  const averageForLabel = (source) => {
-    const values = candidates
-      .map((candidate) => candidate.metrics.find((metric) => metric.label === source)?.score ?? 0)
-      .filter((value) => value > 0);
+  candidates.forEach((candidate) => {
+    (Array.isArray(candidate.metrics) ? candidate.metrics : []).forEach((metric) => {
+      const agentId = normalizeMetricAgentId(metric);
 
-    if (values.length === 0) {
-      return 0;
-    }
+      if (!metricValues.has(agentId)) {
+        return;
+      }
 
-    return values.reduce((sum, value) => sum + value, 0) / values.length;
-  };
+      const score = clampInteger(metric?.score, 0, 100, 0);
 
-  const buildBand = (score) => {
-    const start = Math.max(0, Math.round(score - 12));
-    const width = Math.max(12, Math.round(100 - start - Math.max(score + 12, start + 12)));
-    return { bandStart: start, bandWidth: Math.max(12, 100 - start - Math.max(0, 100 - (start + width))) };
-  };
-
-  const scores = metricLabels.map((metric) => {
-    const score = Math.round(averageForLabel(metric.source));
-    const bandStart = Math.max(0, score - 14);
-    const bandWidth = Math.min(36, Math.max(12, 100 - Math.max(0, score - 14) - Math.max(0, 100 - (score + 10))));
-    return {
-      label: metric.label,
-      score,
-      bandStart,
-      bandWidth,
-    };
+      if (score > 0) {
+        metricValues.get(agentId).push(score);
+      }
+    });
   });
+
+  const scores = scoredMetricAgentIds
+    .map((agentId) => {
+      const values = metricValues.get(agentId) ?? [];
+
+      if (values.length === 0) {
+        return null;
+      }
+
+      const score = Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+      const bandStart = Math.max(0, score - 14);
+      const bandWidth = Math.min(36, Math.max(12, 100 - bandStart - Math.max(0, 100 - (score + 10))));
+
+      return {
+        label: getReportAgentLabel(agentId),
+        score,
+        bandStart,
+        bandWidth,
+      };
+    })
+    .filter(Boolean);
 
   const integrityScore = Math.round(
     candidates.reduce((sum, candidate) => sum + candidate.integrityScore, 0) / Math.max(candidates.length, 1),
@@ -683,6 +781,43 @@ function buildReportAgentScores(candidates) {
   });
 
   return scores;
+}
+
+function buildReportImprovements(candidates) {
+  const counts = new Map();
+
+  candidates.forEach((candidate) => {
+    const tags = Array.isArray(candidate.improvementTags) ? candidate.improvementTags : [];
+
+    tags.forEach((tag) => {
+      const normalizedTag = normalizeImprovementTag(tag);
+
+      if (!normalizedTag) {
+        return;
+      }
+
+      counts.set(normalizedTag, (counts.get(normalizedTag) ?? 0) + 1);
+    });
+  });
+
+  if (counts.size === 0) {
+    return cloneValue(defaultReportImprovements);
+  }
+
+  return [...counts.entries()]
+    .sort((left, right) => {
+      if (right[1] !== left[1]) {
+        return right[1] - left[1];
+      }
+
+      return left[0].localeCompare(right[0], 'ko');
+    })
+    .slice(0, 5)
+    .map(([label, count], index) => ({
+      label,
+      count,
+      tone: index < 3 ? 'danger' : 'dark',
+    }));
 }
 
 function buildReportPayload(candidates) {
@@ -708,7 +843,7 @@ function buildReportPayload(candidates) {
     histogram: buildReportHistogram(candidates),
     topCandidates: buildReportTopCandidates(candidates),
     agentScores: buildReportAgentScores(candidates),
-    improvements: cloneValue(defaultReportImprovements),
+    improvements: buildReportImprovements(candidates),
   };
 }
 
@@ -855,6 +990,344 @@ function buildJobRowPayload(input, agentCatalog) {
   };
 }
 
+function sanitizeSkillList(skills) {
+  return (Array.isArray(skills) ? skills : [])
+    .map((skill) => toCompactText(skill, 40))
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function sanitizeSubmissionResponses(responses) {
+  return (Array.isArray(responses) ? responses : [])
+    .map((response) => ({
+      question: String(response?.question ?? '').trim(),
+      answer: String(response?.answer ?? '').trim(),
+    }))
+    .filter((response) => response.question && response.answer)
+    .slice(0, 10);
+}
+
+function sanitizeEvaluationSubmission(input, index) {
+  if (!input || typeof input !== 'object') {
+    throw new Error(`${index + 1}번째 제출 데이터 형식이 올바르지 않습니다.`);
+  }
+
+  const candidate = input.candidate && typeof input.candidate === 'object' ? input.candidate : {};
+  const profile = input.profile && typeof input.profile === 'object' ? input.profile : {};
+  const challenge = input.challenge && typeof input.challenge === 'object' ? input.challenge : {};
+  const integritySignals =
+    input.integritySignals && typeof input.integritySignals === 'object' ? input.integritySignals : {};
+  const responses = sanitizeSubmissionResponses(input.responses);
+
+  const normalizedSubmission = {
+    candidate: {
+      anonymousId:
+        toCompactText(candidate.anonymousId, 80) ||
+        `wid_${randomUUID().replace(/-/g, '').slice(0, 8)}…`,
+      label: toCompactText(candidate.label, 120),
+      desiredRole: toCompactText(candidate.desiredRole, 80),
+      yearsOfExperience:
+        candidate.yearsOfExperience == null
+          ? null
+          : clampNumber(candidate.yearsOfExperience, 0, 50, 0),
+      humanVerified: candidate.humanVerified === true,
+    },
+    profile: {
+      resumeText: String(profile.resumeText ?? '').trim(),
+      portfolioText: String(profile.portfolioText ?? '').trim(),
+      workHistorySummary: String(profile.workHistorySummary ?? '').trim(),
+      educationSummary: String(profile.educationSummary ?? '').trim(),
+      skills: sanitizeSkillList(profile.skills),
+    },
+    challenge: {
+      prompt: String(challenge.prompt ?? '').trim(),
+      answerText: String(challenge.answerText ?? '').trim(),
+      codeText: String(challenge.codeText ?? '').trim(),
+      language: toCompactText(challenge.language, 40),
+    },
+    responses,
+    integritySignals: {
+      focusLossCount: clampInteger(integritySignals.focusLossCount, 0, 10_000, 0),
+      tabSwitchCount: clampInteger(integritySignals.tabSwitchCount, 0, 10_000, 0),
+      pasteCount: clampInteger(integritySignals.pasteCount, 0, 10_000, 0),
+      plagiarismSimilarityPercent: clampInteger(
+        integritySignals.plagiarismSimilarityPercent,
+        0,
+        100,
+        0,
+      ),
+      styleShiftPercent: clampInteger(integritySignals.styleShiftPercent, 0, 100, 0),
+      timeTakenSeconds: clampInteger(integritySignals.timeTakenSeconds, 0, 604_800, 0),
+      aiGeneratedProbabilityPercent: clampInteger(
+        integritySignals.aiGeneratedProbabilityPercent,
+        0,
+        100,
+        0,
+      ),
+      note: toCompactText(integritySignals.note, 240),
+    },
+  };
+
+  const evidenceFields = [
+    normalizedSubmission.profile.resumeText,
+    normalizedSubmission.profile.portfolioText,
+    normalizedSubmission.profile.workHistorySummary,
+    normalizedSubmission.profile.educationSummary,
+    normalizedSubmission.challenge.prompt,
+    normalizedSubmission.challenge.answerText,
+    normalizedSubmission.challenge.codeText,
+    ...normalizedSubmission.responses.flatMap((response) => [response.question, response.answer]),
+  ].filter((value) => value.length > 0);
+
+  if (evidenceFields.length === 0) {
+    throw new Error(`${index + 1}번째 제출에는 평가할 텍스트 데이터가 없습니다.`);
+  }
+
+  return normalizedSubmission;
+}
+
+function buildEvaluationJobContext(job) {
+  return {
+    id: job.id,
+    title: job.title,
+    sessionType: job.session_type,
+    description: job.description,
+    detailedDescription: job.detailed_description,
+    expectedApplicants: toNumber(job.expected_applicants, 0),
+    processes: parseJsonField(job.processes_payload, []),
+    evaluationCriteria: sanitizeEvaluationCriteria(
+      parseJsonField(job.evaluation_criteria_payload, defaultEvaluationCriteria),
+    ),
+    agents: sanitizeAgents(parseJsonField(job.agents_payload, []), buildDefaultCompanyAgentCatalogItems()),
+  };
+}
+
+function getSupportedSelectedAgents(jobContext) {
+  const selectedAgents = jobContext.agents.filter((agent) => agent.selected === true);
+  const supportedAgents = selectedAgents.filter((agent) => supportedEvaluationAgentIdSet.has(agent.id));
+
+  if (supportedAgents.length === 0) {
+    throw new Error('실제 평가가 가능한 기본 에이전트가 선택되어 있지 않습니다.');
+  }
+
+  return supportedAgents;
+}
+
+function computeHeuristicIntegrityScore(submission) {
+  const { integritySignals } = submission;
+  let score = submission.candidate.humanVerified ? 94 : 84;
+
+  score -= Math.min(18, integritySignals.focusLossCount * 2);
+  score -= Math.min(15, integritySignals.tabSwitchCount);
+  score -= Math.min(12, integritySignals.pasteCount * 2);
+  score -= Math.round(integritySignals.plagiarismSimilarityPercent * 0.35);
+  score -= Math.round(integritySignals.styleShiftPercent * 0.18);
+  score -= Math.round(integritySignals.aiGeneratedProbabilityPercent * 0.2);
+
+  return clampInteger(score, 0, 100, submission.candidate.humanVerified ? 94 : 84);
+}
+
+function computeOverallScore(selectedAgents, agentResults, integrityScore) {
+  const weightedAgents = selectedAgents.filter((agent) => agentResults[agent.id]);
+
+  if (weightedAgents.length === 0) {
+    return 0;
+  }
+
+  const weightedTotal = weightedAgents.reduce((sum, agent) => {
+    const score = agent.id === 'integrity' ? integrityScore : clampInteger(agentResults[agent.id].score, 0, 100, 0);
+    return sum + score * Math.max(agent.weight, 0);
+  }, 0);
+  const weightSum = weightedAgents.reduce((sum, agent) => sum + Math.max(agent.weight, 0), 0);
+  let overallScore = weightSum > 0 ? weightedTotal / weightSum : 0;
+
+  if (integrityScore < 75) {
+    overallScore -= (75 - integrityScore) * 0.18;
+  }
+
+  if (integrityScore < 55) {
+    overallScore -= 4;
+  }
+
+  return Number(clampNumber(overallScore, 0, 100, 0).toFixed(1));
+}
+
+function buildCandidateImprovementTags(agentResults) {
+  return Object.values(agentResults)
+    .flatMap((result) => result.improvementTags ?? [])
+    .map(normalizeImprovementTag)
+    .filter(Boolean)
+    .filter((tag, index, array) => array.indexOf(tag) === index)
+    .slice(0, 6);
+}
+
+function buildCandidateSummary(agentResults) {
+  const summaries = Object.entries(agentResults)
+    .map(([agentId, result]) => ({
+      agentId,
+      score: clampInteger(result.score, 0, 100, 0),
+      summary: result.summary,
+    }))
+    .filter((item) => item.summary);
+
+  if (summaries.length === 0) {
+    return '';
+  }
+
+  const strongest = [...summaries].sort((left, right) => right.score - left.score)[0];
+  const weakest = [...summaries].sort((left, right) => left.score - right.score)[0];
+
+  if (!strongest || !weakest) {
+    return summaries[0]?.summary ?? '';
+  }
+
+  if (strongest.agentId === weakest.agentId) {
+    return strongest.summary;
+  }
+
+  return `${getReportAgentLabel(strongest.agentId)} 강점: ${strongest.summary} ${getReportAgentLabel(weakest.agentId)} 보완: ${weakest.summary}`;
+}
+
+function buildBlindCandidateFromEvaluationRow(row) {
+  const evaluation = parseJsonField(row.evaluation_payload, {});
+
+  return {
+    id: row.id,
+    anonymousId: row.anonymous_id,
+    overallScore: Number(toNumber(row.overall_score, 0).toFixed(1)),
+    humanVerified: toNumber(row.human_verified) === 1,
+    metrics: Array.isArray(evaluation.metrics)
+      ? evaluation.metrics.map((metric) => ({
+          agentId: normalizeMetricAgentId(metric),
+          label: String(metric.label ?? '').trim(),
+          score: clampInteger(metric.score, 0, 100, 0),
+        }))
+      : [],
+    integrityScore: clampInteger(row.integrity_score, 0, 100, 0),
+    selected: toNumber(row.selected) === 1,
+    summary: String(evaluation.summary ?? '').trim(),
+    strengths: toTextList(evaluation.strengths, 160, 5),
+    risks: toTextList(evaluation.risks, 160, 5),
+    improvementTags: toTextList(evaluation.improvementTags, 48, 6).map(normalizeImprovementTag).filter(Boolean),
+    agentBreakdown: evaluation.agentBreakdown && typeof evaluation.agentBreakdown === 'object'
+      ? evaluation.agentBreakdown
+      : {},
+  };
+}
+
+function countEvaluationFraudCandidates(candidates) {
+  return candidates.filter((candidate) => candidate.integrityScore < 65).length;
+}
+
+function buildProgressFromEvaluations(job, candidates) {
+  const expectedApplicants = Math.max(0, toNumber(job.expected_applicants, 0));
+
+  if (expectedApplicants <= 0) {
+    return candidates.length > 0 ? 100 : 0;
+  }
+
+  return clampInteger((candidates.length / expectedApplicants) * 100, 0, 100, 0);
+}
+
+async function syncJobEvaluationSnapshot(companyUserId, job) {
+  const evaluationRows = await getJobEvaluationRows(companyUserId, job.id);
+  const candidates = evaluationRows.map(buildBlindCandidateFromEvaluationRow);
+  const report = buildReportPayload(candidates);
+  const fraudCount = countEvaluationFraudCandidates(candidates);
+  const applicantsCount = candidates.length;
+  const progress = buildProgressFromEvaluations(job, candidates);
+
+  await pool.execute(
+    `
+      UPDATE company_jobs
+      SET applicants_count = ?,
+          progress = ?,
+          fraud_count = ?,
+          blind_candidates_payload = ?,
+          report_payload = ?
+      WHERE company_user_id = ?
+        AND id = ?
+    `,
+    [
+      applicantsCount,
+      progress,
+      fraudCount > 0 ? fraudCount : null,
+      JSON.stringify(candidates),
+      JSON.stringify(report),
+      companyUserId,
+      job.id,
+    ],
+  );
+
+  return { candidates, report, fraudCount, applicantsCount, progress };
+}
+
+async function evaluateJobSubmission(jobContext, submission, selectedAgents) {
+  const agentResults = Object.fromEntries(
+    await Promise.all(
+      selectedAgents.map(async (agent) => [
+        agent.id,
+        await evaluateSubmissionWithCompanyAgent({
+          agentId: agent.id,
+          jobContext,
+          submission,
+        }),
+      ]),
+    ),
+  );
+
+  const heuristicIntegrityScore = computeHeuristicIntegrityScore(submission);
+  const modelIntegrityScore = agentResults.integrity
+    ? clampInteger(agentResults.integrity.score, 0, 100, heuristicIntegrityScore)
+    : heuristicIntegrityScore;
+  const integrityScore = clampInteger(
+    agentResults.integrity
+      ? modelIntegrityScore * 0.7 + heuristicIntegrityScore * 0.3
+      : heuristicIntegrityScore,
+    0,
+    100,
+    heuristicIntegrityScore,
+  );
+
+  const metrics = selectedAgents
+    .filter((agent) => scoredMetricAgentIds.includes(agent.id) && agentResults[agent.id])
+    .map((agent) => ({
+      agentId: agent.id,
+      label: getBlindMetricLabel(agent.id, agent.weight),
+      score: clampInteger(agentResults[agent.id].score, 0, 100, 0),
+    }));
+
+  const strengths = Object.values(agentResults)
+    .flatMap((result) => result.strengths ?? [])
+    .map((item) => toCompactText(item, 160))
+    .filter(Boolean)
+    .filter((item, index, array) => array.indexOf(item) === index)
+    .slice(0, 5);
+  const risks = Object.values(agentResults)
+    .flatMap((result) => result.risks ?? [])
+    .map((item) => toCompactText(item, 160))
+    .filter(Boolean)
+    .filter((item, index, array) => array.indexOf(item) === index)
+    .slice(0, 5);
+  const overallScore = computeOverallScore(selectedAgents, agentResults, integrityScore);
+
+  return {
+    submission,
+    evaluationPayload: {
+      metrics,
+      integrityScore,
+      summary: buildCandidateSummary(agentResults),
+      strengths,
+      risks,
+      improvementTags: buildCandidateImprovementTags(agentResults),
+      agentBreakdown: agentResults,
+      heuristicIntegrityScore,
+    },
+    overallScore,
+    integrityScore,
+  };
+}
+
 function buildJobListing(job) {
   return {
     id: job.id,
@@ -886,6 +1359,24 @@ function buildBlindCard(job) {
     status: blindStatusByJobStatus[job.status] ?? 'open',
     badge: job.badge,
     title: job.title,
+  };
+}
+
+function buildJobReportResponse(job, report) {
+  return {
+    job: buildJobListing(job),
+    summary: {
+      badge: `${job.badge} · 평가 완료`,
+      title: job.title,
+      description:
+        report.participantCount > 0
+          ? `${report.participantCount}명 참여 · 평균 종합 ${report.averageScore} · 중앙값 ${report.medianScore} · 최고 ${report.bestScore}`
+          : '아직 평가 데이터가 없습니다.',
+    },
+    histogram: report.histogram,
+    topCandidates: report.topCandidates,
+    agentScores: report.agentScores,
+    improvements: report.improvements,
   };
 }
 
@@ -1039,6 +1530,22 @@ async function getJobRow(companyUserId, jobId) {
   );
 
   return rows[0] ?? null;
+}
+
+async function getJobEvaluationRows(companyUserId, jobId) {
+  const [rows] = await pool.execute(
+    `
+      SELECT id, company_user_id, job_id, anonymous_id, candidate_label, human_verified, selected,
+             overall_score, integrity_score, submission_payload, evaluation_payload, created_at, updated_at
+      FROM company_job_evaluations
+      WHERE company_user_id = ?
+        AND job_id = ?
+      ORDER BY overall_score DESC, created_at ASC
+    `,
+    [companyUserId, jobId],
+  );
+
+  return rows;
 }
 
 function getSummaryCards(jobs, profile) {
@@ -1422,6 +1929,127 @@ export async function createCompanyJob(companyUser, input) {
   };
 }
 
+export async function evaluateCompanyJobSubmissions(companyUser, jobId, input) {
+  await ensureCompanyPortalSeed(companyUser);
+
+  const companyUserId = toNumber(companyUser.id);
+  const job = await getJobRow(companyUserId, jobId);
+
+  if (!job) {
+    return null;
+  }
+
+  if (!input || typeof input !== 'object') {
+    throw new Error('평가 요청 형식이 올바르지 않습니다.');
+  }
+
+  const submissions = Array.isArray(input.submissions) ? input.submissions : [];
+  const replaceExisting = input.replaceExisting === true;
+
+  if (submissions.length === 0) {
+    throw new Error('최소 1개 이상의 제출 데이터를 보내주세요.');
+  }
+
+  if (submissions.length > 20) {
+    throw new Error('한 번에 평가할 수 있는 제출 수는 최대 20개입니다.');
+  }
+
+  const sanitizedSubmissions = submissions.map(sanitizeEvaluationSubmission);
+  const anonymousIdSet = new Set();
+
+  sanitizedSubmissions.forEach((submission) => {
+    if (anonymousIdSet.has(submission.candidate.anonymousId)) {
+      throw new Error(`중복된 익명 지원자 ID가 있습니다: ${submission.candidate.anonymousId}`);
+    }
+
+    anonymousIdSet.add(submission.candidate.anonymousId);
+  });
+
+  if (!replaceExisting) {
+    const existingEvaluationRows = await getJobEvaluationRows(companyUserId, job.id);
+    const existingAnonymousIdSet = new Set(existingEvaluationRows.map((row) => row.anonymous_id));
+
+    sanitizedSubmissions.forEach((submission) => {
+      if (existingAnonymousIdSet.has(submission.candidate.anonymousId)) {
+        throw new Error(
+          `이미 평가된 익명 지원자 ID입니다: ${submission.candidate.anonymousId}. replaceExisting=true 로 전체 재평가하거나 ID를 바꿔주세요.`,
+        );
+      }
+    });
+  }
+
+  const jobContext = buildEvaluationJobContext(job);
+  const selectedAgents = getSupportedSelectedAgents(jobContext);
+
+  let evaluationResults;
+
+  try {
+    evaluationResults = [];
+
+    for (const submission of sanitizedSubmissions) {
+      evaluationResults.push(await evaluateJobSubmission(jobContext, submission, selectedAgents));
+    }
+  } catch (error) {
+    if (error instanceof CompanyAgentEvaluationError) {
+      throw error;
+    }
+
+    throw error;
+  }
+
+  if (replaceExisting) {
+    await pool.execute(
+      `
+        DELETE FROM company_job_evaluations
+        WHERE company_user_id = ?
+          AND job_id = ?
+      `,
+      [companyUserId, job.id],
+    );
+  }
+
+  for (const result of evaluationResults) {
+    const evaluationId = `eval-${randomUUID()}`;
+
+    await pool.execute(
+      `
+        INSERT INTO company_job_evaluations (
+          id, company_user_id, job_id, anonymous_id, candidate_label, human_verified, selected,
+          overall_score, integrity_score, submission_payload, evaluation_payload
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        evaluationId,
+        companyUserId,
+        job.id,
+        result.submission.candidate.anonymousId,
+        result.submission.candidate.label || null,
+        result.submission.candidate.humanVerified ? 1 : 0,
+        0,
+        result.overallScore,
+        result.integrityScore,
+        JSON.stringify(result.submission),
+        JSON.stringify(result.evaluationPayload),
+      ],
+    );
+  }
+
+  const snapshot = await syncJobEvaluationSnapshot(companyUserId, job);
+  const refreshedJob = (await getJobRow(companyUserId, job.id)) ?? job;
+
+  return {
+    evaluatedCount: evaluationResults.length,
+    candidates: snapshot.candidates,
+    report: buildJobReportResponse(refreshedJob, snapshot.report),
+    summary: {
+      applicantsCount: snapshot.applicantsCount,
+      fraudCount: snapshot.fraudCount,
+      progress: snapshot.progress,
+    },
+  };
+}
+
 export async function getCompanyJobReport(companyUser, jobId) {
   await ensureCompanyPortalSeed(companyUser);
 
@@ -1432,22 +2060,7 @@ export async function getCompanyJobReport(companyUser, jobId) {
   }
 
   const report = parseJsonField(job.report_payload, buildEmptyReportPayload());
-
-  return {
-    job: buildJobListing(job),
-    summary: {
-      badge: `${job.badge} · 평가 완료`,
-      title: job.title,
-      description:
-        report.participantCount > 0
-          ? `${report.participantCount}명 참여 · 평균 종합 ${report.averageScore} · 중앙값 ${report.medianScore} · 최고 ${report.bestScore}`
-          : '아직 평가 데이터가 없습니다.',
-    },
-    histogram: report.histogram,
-    topCandidates: report.topCandidates,
-    agentScores: report.agentScores,
-    improvements: report.improvements,
-  };
+  return buildJobReportResponse(job, report);
 }
 
 export async function getCompanyBlindRanking(companyUser, jobId) {
@@ -1476,10 +2089,37 @@ export async function getCompanyBlindRanking(companyUser, jobId) {
 export async function updateCompanyBlindCandidateSelection(companyUser, jobId, candidateId, selected) {
   await ensureCompanyPortalSeed(companyUser);
 
-  const job = await getJobRow(toNumber(companyUser.id), jobId);
+  const companyUserId = toNumber(companyUser.id);
+  const job = await getJobRow(companyUserId, jobId);
 
   if (!job) {
     return null;
+  }
+
+  const existingEvaluationRows = await getJobEvaluationRows(companyUserId, jobId);
+
+  if (existingEvaluationRows.length > 0) {
+    const [result] = await pool.execute(
+      `
+        UPDATE company_job_evaluations
+        SET selected = ?
+        WHERE company_user_id = ?
+          AND job_id = ?
+          AND id = ?
+      `,
+      [selected === true ? 1 : 0, companyUserId, jobId, candidateId],
+    );
+
+    if (toNumber(result?.affectedRows, 0) === 0) {
+      return null;
+    }
+
+    const snapshot = await syncJobEvaluationSnapshot(companyUserId, job);
+
+    return {
+      candidates: snapshot.candidates,
+      selectedCount: snapshot.candidates.filter((candidate) => candidate.selected).length,
+    };
   }
 
   const candidates = parseJsonField(job.blind_candidates_payload, []).map((candidate) =>
@@ -1494,7 +2134,7 @@ export async function updateCompanyBlindCandidateSelection(companyUser, jobId, c
       WHERE company_user_id = ?
         AND id = ?
     `,
-    [JSON.stringify(candidates), JSON.stringify(buildReportPayload(candidates)), toNumber(companyUser.id), jobId],
+    [JSON.stringify(candidates), JSON.stringify(buildReportPayload(candidates)), companyUserId, jobId],
   );
 
   return {

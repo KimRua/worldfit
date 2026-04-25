@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import session from 'express-session';
+import multer from 'multer';
 import { hashSignal } from '@worldcoin/idkit/hashing';
 import { signRequest } from '@worldcoin/idkit/signing';
 import {
@@ -21,7 +22,13 @@ import {
   startCompanyCreditMonitor,
 } from './company-credit.js';
 import {
+  CompanyPdfParseError,
+  extractTextFromCompanyPdfFile,
+  getCompanyPdfUploadLimitBytes,
+} from './company-document-parser.js';
+import {
   createCompanyJob,
+  evaluateCompanyJobSubmissions,
   getCompanyBlindRanking,
   getCompanyJobReport,
   getCompanyPortalBootstrap,
@@ -51,6 +58,12 @@ const worldIdRpId = process.env.WORLD_ID_RP_ID?.trim() ?? '';
 const worldIdAction = process.env.WORLD_ID_ACTION?.trim() || 'candidate-signup';
 const worldIdSigningKey = process.env.WORLD_ID_SIGNING_KEY?.trim() ?? '';
 const worldIdEnvironment = process.env.WORLD_ID_ENVIRONMENT === 'production' ? 'production' : 'staging';
+const companyPdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: getCompanyPdfUploadLimitBytes(),
+  },
+});
 
 app.use(
   cors({
@@ -498,6 +511,78 @@ app.post('/api/company/jobs', async (req, res) => {
       message: error instanceof Error ? error.message : '공고 생성 중 오류가 발생했습니다.',
     });
   }
+});
+
+app.post('/api/company/jobs/:jobId/evaluate', async (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  try {
+    const result = await evaluateCompanyJobSubmissions(companyUser, req.params.jobId, req.body ?? {});
+
+    if (!result) {
+      res.status(404).json({ message: '평가할 공고를 찾을 수 없습니다.' });
+      return;
+    }
+
+    res.json({
+      message: `${result.evaluatedCount}명의 제출 평가가 완료되었습니다.`,
+      evaluatedCount: result.evaluatedCount,
+      candidates: result.candidates,
+      report: result.report,
+      summary: result.summary,
+    });
+  } catch (error) {
+    console.error('Company job evaluation failed:', error);
+    const status = Number(error?.status) || 400;
+    res.status(status).json({
+      message: error instanceof Error ? error.message : '실제 에이전트 평가 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.post('/api/company/pdf/extract', (req, res) => {
+  const companyUser = requireCompanySessionUser(req, res);
+
+  if (!companyUser) {
+    return;
+  }
+
+  companyPdfUpload.single('file')(req, res, async (uploadError) => {
+    if (uploadError) {
+      if (uploadError instanceof multer.MulterError && uploadError.code === 'LIMIT_FILE_SIZE') {
+        res.status(400).json({ message: 'PDF 파일 크기가 너무 큽니다.' });
+        return;
+      }
+
+      console.error('Company PDF upload failed:', uploadError);
+      res.status(400).json({
+        message: uploadError instanceof Error ? uploadError.message : 'PDF 업로드 중 오류가 발생했습니다.',
+      });
+      return;
+    }
+
+    try {
+      const result = await extractTextFromCompanyPdfFile(req.file, {
+        target: req.body?.target,
+      });
+
+      res.json({
+        message: 'PDF 텍스트 추출이 완료되었습니다.',
+        document: result,
+      });
+    } catch (error) {
+      console.error('Company PDF extract failed:', error);
+      const status =
+        error instanceof CompanyPdfParseError ? Number(error.status) || 400 : 400;
+      res.status(status).json({
+        message: error instanceof Error ? error.message : 'PDF 텍스트 추출 중 오류가 발생했습니다.',
+      });
+    }
+  });
 });
 
 app.get('/api/company/jobs/:jobId/report', async (req, res) => {

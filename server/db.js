@@ -423,6 +423,33 @@ export async function ensureDatabase() {
   );
 
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS company_job_evaluations (
+      id VARCHAR(64) NOT NULL,
+      company_user_id BIGINT UNSIGNED NOT NULL,
+      job_id VARCHAR(64) NOT NULL,
+      anonymous_id VARCHAR(120) NOT NULL,
+      candidate_label VARCHAR(120) NULL,
+      human_verified TINYINT(1) NOT NULL DEFAULT 0,
+      selected TINYINT(1) NOT NULL DEFAULT 0,
+      overall_score DECIMAL(5,2) NOT NULL DEFAULT 0,
+      integrity_score INT NOT NULL DEFAULT 0,
+      submission_payload JSON NOT NULL,
+      evaluation_payload JSON NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_company_job_evaluations_job (company_user_id, job_id),
+      KEY idx_company_job_evaluations_score (job_id, overall_score),
+      CONSTRAINT fk_company_job_evaluations_user
+        FOREIGN KEY (company_user_id) REFERENCES company_users(id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_company_job_evaluations_job
+        FOREIGN KEY (job_id) REFERENCES company_jobs(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS company_fraud_cases (
       id VARCHAR(64) NOT NULL,
       company_user_id BIGINT UNSIGNED NOT NULL,

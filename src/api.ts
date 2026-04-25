@@ -295,6 +295,18 @@ export type CompanyBlindRankingResponse = {
   };
 };
 
+export type CompanyPdfExtractResponse = {
+  message: string;
+  document: {
+    fileName: string;
+    target: string | null;
+    pageCount: number;
+    characterCount: number;
+    truncated: boolean;
+    text: string;
+  };
+};
+
 export type WorldIdEnvironment = 'production' | 'staging';
 
 export type WorldIdConfig = {
@@ -344,6 +356,27 @@ async function request<T>(path: string, options: ApiRequestOptions = {}) {
     },
     credentials: 'include',
     body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message =
+      typeof payload.message === 'string' ? payload.message : '요청 처리 중 오류가 발생했습니다.';
+    const code = typeof payload.code === 'string' ? payload.code : undefined;
+    const retryAfterSeconds =
+      typeof payload.retryAfterSeconds === 'number' ? payload.retryAfterSeconds : undefined;
+    throw new ApiError(message, response.status, code, retryAfterSeconds);
+  }
+
+  return payload as T;
+}
+
+async function requestFormData<T>(path: string, formData: FormData) {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -666,6 +699,20 @@ export function fetchCompanyJobReport(jobId: string) {
 
 export function fetchCompanyBlindRanking(jobId: string) {
   return request<CompanyBlindRankingResponse>(`/api/company/blind/${jobId}/ranking`);
+}
+
+export function extractCompanyPdfText(input: {
+  file: File;
+  target?: string;
+}) {
+  const formData = new FormData();
+  formData.append('file', input.file);
+
+  if (input.target) {
+    formData.append('target', input.target);
+  }
+
+  return requestFormData<CompanyPdfExtractResponse>('/api/company/pdf/extract', formData);
 }
 
 export function setCompanyBlindRankingSelection(
