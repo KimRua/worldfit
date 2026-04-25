@@ -155,6 +155,8 @@ type CompanyBlindRankingCandidate = {
 type CompanyBlindRankingHumanFilter = 'all' | 'verified' | 'unverified';
 type CompanyBlindRankingSortOrder = 'desc' | 'asc';
 type CompanyBlindRankingDetailTab = 'overview' | 'tech' | 'reason' | 'comm' | 'creat' | 'integrity';
+type CompanyJobTypeFilter = 'all' | CompanySessionType;
+type CompanyJobStatusFilterKey = 'all' | 'draft' | 'open' | 'closed';
 
 type CompanyBlindRankingTabSection = {
   heading: string;
@@ -890,6 +892,21 @@ const companyBlindSelectionStatusFilters = [
   { key: 'closing', label: '마감임박' },
 ] as const;
 
+const companyJobTypeFilters = [
+  { key: 'all', label: '전체' },
+  { key: 'recruiting', label: '채용' },
+  { key: 'contest', label: '공모전' },
+  { key: 'audition', label: '오디션' },
+  { key: 'education', label: '교육' },
+] as const satisfies readonly { key: CompanyJobTypeFilter; label: string }[];
+
+const companyJobStatusFilters = [
+  { key: 'all', label: '전체' },
+  { key: 'draft', label: '대기' },
+  { key: 'open', label: '진행' },
+  { key: 'closed', label: '종료' },
+] as const satisfies readonly { key: CompanyJobStatusFilterKey; label: string }[];
+
 const companyBlindRankingDetailTabs = [
   { key: 'overview', label: '종합 정보' },
   { key: 'tech', label: 'Tech 35%' },
@@ -1243,6 +1260,9 @@ function App() {
     useState<CompanyBlindRankingDetailTab>('overview');
   const [companyFraudFilter, setCompanyFraudFilter] = useState<CompanyFraudCaseStatus>('pending');
   const [selectedCompanyFraudCaseId, setSelectedCompanyFraudCaseId] = useState<string | null>(null);
+  const [companyJobSearch, setCompanyJobSearch] = useState('');
+  const [companyJobTypeFilter, setCompanyJobTypeFilter] = useState<CompanyJobTypeFilter>('all');
+  const [companyJobStatusFilter, setCompanyJobStatusFilter] = useState<CompanyJobStatusFilterKey>('all');
   const [companyBlindSelectionSearch, setCompanyBlindSelectionSearch] = useState('');
   const [companyBlindSelectionTypeFilter, setCompanyBlindSelectionTypeFilter] =
     useState<(typeof companyBlindSelectionTypeFilters)[number]['key']>('all');
@@ -4385,6 +4405,23 @@ function App() {
     const resolvedCompanyJobStatusFilters =
       resolvedCompanyPortalData.jobs.statusFilters;
     const resolvedCompanyJobListings = resolvedCompanyPortalData.jobs.items;
+    const visibleCompanyJobListings = resolvedCompanyJobListings.filter((job) => {
+      const matchesSearch =
+        companyJobSearch.trim().length === 0 ||
+        job.title.toLowerCase().includes(companyJobSearch.trim().toLowerCase());
+      const matchesType =
+        companyJobTypeFilter === 'all' ||
+        job.type === companyJobTypeFilters.find((filter) => filter.key === companyJobTypeFilter)?.label;
+      const matchesStatus =
+        companyJobStatusFilter === 'all' ||
+        (companyJobStatusFilter === 'draft'
+          ? job.status === '대기'
+          : companyJobStatusFilter === 'open'
+            ? job.status === '진행' || job.status === '마감 임박'
+            : job.status === '종료');
+
+      return matchesSearch && matchesType && matchesStatus;
+    });
     const resolvedCompanyBlindSelectionCards = resolvedCompanyPortalData.blind.cards;
     const resolvedCompanyFraudFilterOptions =
       resolvedCompanyPortalData.fraud.filters;
@@ -4861,18 +4898,29 @@ function App() {
             <>
               <section className="company-job-board-toolbar company-dashboard-card">
                 <div className="company-job-board-toolbar__left">
-                  <button type="button" className="company-job-board-toolbar__select">
-                    유형 전체 ▾
-                  </button>
+                  <label className="company-job-board-toolbar__select">
+                    <span className="sr-only">공고 유형 선택</span>
+                    <select
+                      value={companyJobTypeFilter}
+                      onChange={(event) => setCompanyJobTypeFilter(event.target.value as CompanyJobTypeFilter)}
+                    >
+                      {companyJobTypeFilters.map((filter) => (
+                        <option key={filter.key} value={filter.key}>
+                          {`유형 ${filter.label}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
                   <div className="company-job-board-toolbar__filters" aria-label="공고 상태 필터">
-                    {resolvedCompanyJobStatusFilters.map((filter) => (
+                    {companyJobStatusFilters.map((filter) => (
                       <button
-                        key={filter.label}
+                        key={filter.key}
                         type="button"
-                        className={`company-job-board-toolbar__filter${filter.active ? ' company-job-board-toolbar__filter--active' : ''}`}
+                        className={`company-job-board-toolbar__filter${companyJobStatusFilter === filter.key ? ' company-job-board-toolbar__filter--active' : ''}`}
+                        onClick={() => setCompanyJobStatusFilter(filter.key)}
                       >
-                        {filter.label}
+                        {resolvedCompanyJobStatusFilters.find((item) => item.label.startsWith(filter.label))?.label ?? filter.label}
                       </button>
                     ))}
                   </div>
@@ -4881,7 +4929,12 @@ function App() {
                 <div className="company-job-board-toolbar__right">
                   <label className="company-job-board-toolbar__search">
                     <span className="sr-only">공고명 검색</span>
-                    <input type="text" placeholder="공고명 검색" />
+                    <input
+                      type="text"
+                      placeholder="공고명 검색"
+                      value={companyJobSearch}
+                      onChange={(event) => setCompanyJobSearch(event.target.value)}
+                    />
                   </label>
 
                   <button
@@ -4896,48 +4949,57 @@ function App() {
 
               {resolvedCompanyJobListings.length > 0 ? (
                 <section className="company-job-board-table company-dashboard-card">
-                  <div className="company-job-board-table__scroller" role="table" aria-label="공고 목록">
-                    <div className="company-job-board-table__row company-job-board-table__row--head" role="row">
-                      <span role="columnheader">공고</span>
-                      <span role="columnheader">유형</span>
-                      <span role="columnheader">기간</span>
-                      <span role="columnheader">지원자</span>
-                      <span role="columnheader">상태</span>
-                      <span role="columnheader">부정</span>
-                      <span role="columnheader" aria-hidden="true" />
-                    </div>
-
-                    {resolvedCompanyJobListings.map((job, index) => (
-                      <div
-                        className={`company-job-board-table__row${index % 2 === 1 ? ' company-job-board-table__row--striped' : ''}`}
-                        role="row"
-                        key={job.id}
-                      >
-                        <strong role="cell">{job.title}</strong>
-                        <span role="cell">{job.type}</span>
-                        <span role="cell">{job.period}</span>
-                        <span role="cell">{job.applicants}</span>
-                        <div role="cell">
-                          <span className={`company-job-board-table__status company-job-board-table__status--${job.statusTone}`}>
-                            {job.status}
-                          </span>
-                        </div>
-                        <div role="cell">
-                          <span className={`company-job-board-table__fraud${job.fraudCount ? ' company-job-board-table__fraud--alert' : ''}`}>
-                            {job.fraudCount ? `▲ ${job.fraudCount}` : '—'}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          className="company-job-board-table__report"
-                          role="cell"
-                          onClick={() => openCompanyReport(job)}
-                        >
-                          리포트 보기 →
-                        </button>
+                  {visibleCompanyJobListings.length > 0 ? (
+                    <div className="company-job-board-table__scroller" role="table" aria-label="공고 목록">
+                      <div className="company-job-board-table__row company-job-board-table__row--head" role="row">
+                        <span role="columnheader">공고</span>
+                        <span role="columnheader">유형</span>
+                        <span role="columnheader">기간</span>
+                        <span role="columnheader">지원자</span>
+                        <span role="columnheader">상태</span>
+                        <span role="columnheader">부정</span>
+                        <span role="columnheader" aria-hidden="true" />
                       </div>
-                    ))}
-                  </div>
+
+                      {visibleCompanyJobListings.map((job, index) => (
+                        <div
+                          className={`company-job-board-table__row${index % 2 === 1 ? ' company-job-board-table__row--striped' : ''}`}
+                          role="row"
+                          key={job.id}
+                        >
+                          <strong role="cell">{job.title}</strong>
+                          <span role="cell">{job.type}</span>
+                          <span role="cell">{job.period}</span>
+                          <span role="cell">{job.applicants}</span>
+                          <div role="cell">
+                            <span className={`company-job-board-table__status company-job-board-table__status--${job.statusTone}`}>
+                              {job.status}
+                            </span>
+                          </div>
+                          <div role="cell">
+                            <span className={`company-job-board-table__fraud${job.fraudCount ? ' company-job-board-table__fraud--alert' : ''}`}>
+                              {job.fraudCount ? `▲ ${job.fraudCount}` : '—'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="company-job-board-table__report"
+                            role="cell"
+                            onClick={() => openCompanyReport(job)}
+                          >
+                            리포트 보기 →
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      className="company-dashboard-empty-state company-dashboard-empty-state--jobs"
+                      aria-label="공고 검색 결과 없음"
+                    >
+                      <p>선택한 조건에 맞는 공고가 없습니다.</p>
+                    </div>
+                  )}
                 </section>
               ) : (
                 <div

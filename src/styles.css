@@ -4294,6 +4294,35 @@ a {
   color: #6b7585;
 }
 
+.company-job-board-toolbar__select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+}
+
+.company-job-board-toolbar__select::after {
+  content: '▾';
+  color: #6b7585;
+  font-size: 11px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.company-job-board-toolbar__select select {
+  border: 0;
+  background: transparent;
+  color: #6b7585;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 300;
+  outline: none;
+  appearance: none;
+  padding-right: 12px;
+  cursor: pointer;
+}
+
 .company-job-board-toolbar__filter--active,
 .company-job-board-toolbar__cta {
   background: #0d0f19;
