@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const mailHost = process.env.MAIL_HOST ?? '127.0.0.1';
 const mailPort = Number(process.env.MAIL_PORT ?? 1025);

@@ -1,4 +1,30 @@
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: verifit-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: verifit1234
+      DB_NAME: verifit
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      CORS_ORIGIN: http://localhost:8080
+      TRUST_PROXY: 1
+    ports:
+      - "8080:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
   mysql:
     image: mysql:8.4
     container_name: verifit-mysql

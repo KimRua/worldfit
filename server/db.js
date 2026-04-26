@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import mysql from 'mysql2/promise';
 import { defaultCompanyAgentCatalogSeed } from './company-agent-catalog.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const removedCompanyAgentIds = ['custom-rubric'];
 

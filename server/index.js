@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import express from 'express';
 import session from 'express-session';
 import multer from 'multer';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { hashSignal } from '@worldcoin/idkit/hashing';
 import { signRequest } from '@worldcoin/idkit/signing';
 import {
@@ -53,11 +55,15 @@ import {
   sendCompanyVerificationEmail,
 } from './mail.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distDirectory = path.resolve(__dirname, '../dist');
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
 const isProduction = process.env.NODE_ENV === 'production';
+const trustProxySetting = process.env.TRUST_PROXY?.trim();
 const verificationExpiryMinutes = Number(process.env.COMPANY_VERIFICATION_EXPIRES_MINUTES ?? 10);
 const maxFailedLoginAttempts = 10;
 const unlockResendCooldownSeconds = 60;
@@ -85,6 +91,16 @@ const candidateApplicationUpload = multer({
     files: 10,
   },
 });
+
+if (trustProxySetting) {
+  const numericTrustProxySetting = Number(trustProxySetting);
+  app.set(
+    'trust proxy',
+    Number.isInteger(numericTrustProxySetting) ? numericTrustProxySetting : trustProxySetting,
+  );
+} else if (isProduction) {
+  app.set('trust proxy', 1);
+}
 
 app.use(
   cors({
@@ -2525,14 +2541,34 @@ app.post('/api/auth/logout', (req, res) => {
   });
 });
 
-ensureDatabase()
-  .then(() => {
-    startCompanyCreditMonitor();
-    app.listen(port, () => {
-      console.log(`Verifit auth server listening on http://localhost:${port}`);
-    });
-  })
-  .catch((error) => {
+if (isProduction) {
+  app.use(express.static(distDirectory, { index: false }));
+  app.use((req, res, next) => {
+    if (!['GET', 'HEAD'].includes(req.method) || req.path.startsWith('/api')) {
+      next();
+      return;
+    }
+
+    res.sendFile(path.join(distDirectory, 'index.html'));
+  });
+}
+
+export { app };
+
+export async function startServer() {
+  await ensureDatabase();
+  startCompanyCreditMonitor();
+
+  return app.listen(port, () => {
+    console.log(`Verifit auth server listening on http://localhost:${port}`);
+  });
+}
+
+const isEntrypoint = process.argv[1] != null && path.resolve(process.argv[1]) === __filename;
+
+if (isEntrypoint) {
+  startServer().catch((error) => {
     console.error('Failed to start server:', error);
     process.exit(1);
   });
+}
