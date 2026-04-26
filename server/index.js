@@ -22,6 +22,15 @@ import {
   startCompanyCreditMonitor,
 } from './company-credit.js';
 import {
+  getCandidatePortalBootstrap,
+  respondToCandidateMatchRequest,
+  saveCandidateDocumentCredential,
+  saveCandidateFavorites,
+  saveCandidateJobApplication,
+  saveCandidateSettings,
+  verifyCandidateEligibility,
+} from './candidate-portal.js';
+import {
   CompanyPdfParseError,
   extractTextFromCompanyPdfFile,
   getCompanyPdfUploadLimitBytes,
@@ -55,13 +64,25 @@ const unlockResendCooldownSeconds = 60;
 const maxUnlockVerificationAttempts = 5;
 const worldIdAppId = process.env.WORLD_ID_APP_ID?.trim() ?? '';
 const worldIdRpId = process.env.WORLD_ID_RP_ID?.trim() ?? '';
-const worldIdAction = process.env.WORLD_ID_ACTION?.trim() || 'candidate-signup';
+const worldIdSignupAction = process.env.WORLD_ID_ACTION?.trim() || 'candidate-signup';
+const worldIdDocumentAction =
+  process.env.WORLD_ID_DOCUMENT_ACTION?.trim() || 'candidate-document-eligibility';
 const worldIdSigningKey = process.env.WORLD_ID_SIGNING_KEY?.trim() ?? '';
 const worldIdEnvironment = process.env.WORLD_ID_ENVIRONMENT === 'production' ? 'production' : 'staging';
+const candidateHumanVerificationTtlMs = Number(
+  process.env.CANDIDATE_HUMAN_VERIFICATION_TTL_MS ?? 15 * 60 * 1000,
+);
 const companyPdfUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: getCompanyPdfUploadLimitBytes(),
+  },
+});
+const candidateApplicationUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: getCompanyPdfUploadLimitBytes(),
+    files: 10,
   },
 });
 
@@ -137,6 +158,17 @@ function requireAdminSessionUser(req, res) {
   return adminUser;
 }
 
+function requireCandidateSessionUser(req, res) {
+  const candidateUser = getCandidateSessionUser(req);
+
+  if (!candidateUser) {
+    res.status(401).json({ message: '지원자 로그인 세션이 필요합니다.' });
+    return null;
+  }
+
+  return candidateUser;
+}
+
 function setCompanySessionUser(req, user) {
   req.session.companyUser = user;
 }
@@ -155,10 +187,115 @@ function clearCompanySessionUser(req) {
 
 function clearCandidateSessionUser(req) {
   delete req.session.candidateUser;
+  delete req.session.candidateHumanVerification;
+  delete req.session.candidateMatchConsentVerification;
 }
 
 function clearAdminSessionUser(req) {
   delete req.session.adminUser;
+}
+
+function setCandidateHumanVerification(req, candidateUser, jobId) {
+  req.session.candidateHumanVerification = {
+    candidateUserId: String(candidateUser.id),
+    jobId: String(jobId),
+    verifiedAt: Date.now(),
+  };
+}
+
+function setCandidateMatchConsentVerification(req, candidateUser, matchId) {
+  req.session.candidateMatchConsentVerification = {
+    candidateUserId: String(candidateUser.id),
+    matchId: String(matchId),
+    verifiedAt: Date.now(),
+  };
+}
+
+function hasFreshCandidateHumanVerification(req, candidateUser, jobId) {
+  const verification = req.session.candidateHumanVerification;
+
+  if (!verification || typeof verification !== 'object') {
+    return false;
+  }
+
+  if (
+    String(verification.candidateUserId ?? '') !== String(candidateUser.id) ||
+    String(verification.jobId ?? '') !== String(jobId)
+  ) {
+    return false;
+  }
+
+  const verifiedAt = Number(verification.verifiedAt ?? 0);
+
+  if (!Number.isFinite(verifiedAt) || verifiedAt <= 0) {
+    return false;
+  }
+
+  return Date.now() - verifiedAt <= candidateHumanVerificationTtlMs;
+}
+
+function parseCandidateApplicationBody(body) {
+  if (!body || typeof body !== 'object') {
+    return {};
+  }
+
+  if (typeof body.processResponses !== 'string') {
+    return body;
+  }
+
+  try {
+    return {
+      ...body,
+      processResponses: JSON.parse(body.processResponses),
+    };
+  } catch {
+    throw new Error('제출 데이터 형식을 해석하지 못했습니다.');
+  }
+}
+
+function getCandidateUploadedProcessFiles(files) {
+  const uploadedFiles = new Map();
+
+  for (const file of Array.isArray(files) ? files : []) {
+    const matchedProcessId = String(file?.fieldname ?? '').match(/^processFile_(\d+)$/);
+
+    if (!matchedProcessId) {
+      continue;
+    }
+
+    const processId = Number(matchedProcessId[1]);
+
+    if (!Number.isFinite(processId) || processId <= 0) {
+      continue;
+    }
+
+    uploadedFiles.set(processId, file);
+  }
+
+  return uploadedFiles;
+}
+
+function hasFreshCandidateMatchConsentVerification(req, candidateUser, matchId) {
+  const verification = req.session.candidateMatchConsentVerification;
+
+  if (!verification || typeof verification !== 'object') {
+    return false;
+  }
+
+  if (
+    String(verification.candidateUserId ?? '') !== String(candidateUser.id) ||
+    String(verification.matchId ?? '') !== String(matchId)
+  ) {
+    return false;
+  }
+
+  const verifiedAt = Number(verification.verifiedAt ?? 0);
+
+  if (!Number.isFinite(verifiedAt) || verifiedAt <= 0) {
+    return false;
+  }
+
+  return Date.now() - verifiedAt <= candidateHumanVerificationTtlMs;
 }
 
 function isValidEmail(value) {
@@ -235,7 +372,7 @@ async function getCandidateUserByNullifierHash(nullifierHash) {
         AND cwv.action = ?
       LIMIT 1
     `,
-    [nullifierHash, worldIdAction],
+    [nullifierHash, worldIdSignupAction],
   );
 
   const candidate = rows[0];
@@ -243,8 +380,49 @@ async function getCandidateUserByNullifierHash(nullifierHash) {
   return candidate ? toCandidateSessionUser(candidate) : null;
 }
 
-async function verifyWorldIdResult(idkitResponse) {
-  if (idkitResponse.action !== worldIdAction) {
+function buildWorldIdRpSignature(action) {
+  const { sig, nonce, createdAt, expiresAt } = signRequest({
+    signingKeyHex: worldIdSigningKey,
+    action,
+  });
+
+  return {
+    appId: worldIdAppId,
+    action,
+    environment: worldIdEnvironment,
+    rpContext: {
+      rp_id: worldIdRpId,
+      nonce,
+      created_at: createdAt,
+      expires_at: expiresAt,
+      signature: sig,
+    },
+  };
+}
+
+function buildSignalHash(value) {
+  return hashSignal(value).toLowerCase();
+}
+
+function getCandidateDocumentSignal(candidateUser) {
+  return `candidate-document:${candidateUser.id}`;
+}
+
+function isWorldDocumentCredentialItem(verificationItem) {
+  const identifier = String(verificationItem?.identifier ?? '')
+    .trim()
+    .toLowerCase();
+  const issuerSchemaId = Number(verificationItem?.issuer_schema_id);
+
+  return (
+    ['passport', 'mnc'].includes(identifier) ||
+    issuerSchemaId === 9303 ||
+    issuerSchemaId === 9310
+  );
+}
+
+async function verifyWorldIdResult(idkitResponse, expectedAction) {
+  if (idkitResponse.action !== expectedAction) {
     return { ok: false, status: 400, message: 'World ID action 값이 올바르지 않습니다.' };
   }
 
@@ -309,7 +487,7 @@ app.get('/api/world-id/config', (_req, res) => {
   res.json({
     enabled: isWorldIdConfigured(),
     appId: worldIdAppId || null,
-    action: worldIdAction,
+    action: worldIdSignupAction,
     environment: worldIdEnvironment,
   });
 });
@@ -325,6 +503,264 @@ app.get('/api/auth/me', (req, res) => {
   }
 
   res.json({ companyUser, candidateUser, adminUser });
+});
+
+app.get('/api/candidate/portal/bootstrap', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  try {
+    const portal = await getCandidatePortalBootstrap(candidateUser);
+    res.json(portal);
+  } catch (error) {
+    console.error('Candidate portal bootstrap failed:', error);
+    res.status(500).json({ message: '지원자 포털 데이터를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+app.put('/api/candidate/settings', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  try {
+    const result = await saveCandidateSettings(candidateUser, req.body ?? {});
+    setCandidateSessionUser(req, result.candidateUser);
+    res.json({
+      message: result.message,
+      candidateUser: result.candidateUser,
+      settings: result.settings,
+    });
+  } catch (error) {
+    console.error('Candidate settings update failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '설정 저장 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.put('/api/candidate/favorites', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  try {
+    const result = await saveCandidateFavorites(candidateUser, req.body ?? {});
+    res.json(result);
+  } catch (error) {
+    console.error('Candidate favorites update failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '즐겨찾기 저장 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.get('/api/candidate/jobs/:jobId/eligibility', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  try {
+    const result = await verifyCandidateEligibility(candidateUser, String(req.params.jobId ?? ''));
+    res.json(result);
+  } catch (error) {
+    console.error('Candidate eligibility fetch failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '지원 자격 상태를 확인하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.post('/api/candidate/jobs/:jobId/eligibility/world-id/rp-signature', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  if (!isWorldIdConfigured()) {
+    res.status(503).json({
+      message: 'World ID 환경변수가 아직 설정되지 않았습니다.',
+      code: 'WORLD_ID_NOT_CONFIGURED',
+    });
+    return;
+  }
+
+  try {
+    res.json({
+      ...buildWorldIdRpSignature(worldIdDocumentAction),
+      signal: getCandidateDocumentSignal(candidateUser),
+    });
+  } catch (error) {
+    console.error('Candidate eligibility RP signature generation failed:', error);
+    res.status(500).json({ message: '지원 자격 인증 준비 중 오류가 발생했습니다.' });
+  }
+});
+
+app.post('/api/candidate/jobs/:jobId/eligibility/world-id/verify', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  if (!isWorldIdConfigured()) {
+    res.status(503).json({
+      message: 'World ID 환경변수가 아직 설정되지 않았습니다.',
+      code: 'WORLD_ID_NOT_CONFIGURED',
+    });
+    return;
+  }
+
+  const idkitResponse = req.body.idkitResponse;
+  const verificationItem = extractWorldIdVerificationItem(idkitResponse);
+
+  if (!verificationItem) {
+    res.status(400).json({ message: 'World ID 응답 형식이 올바르지 않습니다.' });
+    return;
+  }
+
+  try {
+    if (idkitResponse?.protocol_version !== '4.0') {
+      res.status(400).json({
+        message: '지원 자격 인증은 World ID 4.0 문서 credential으로만 검증할 수 있습니다.',
+      });
+      return;
+    }
+
+    if (!isWorldDocumentCredentialItem(verificationItem)) {
+      res.status(400).json({
+        message: '지원 자격 인증에는 여권 또는 모바일 신분증 기반 문서 credential이 필요합니다.',
+      });
+      return;
+    }
+
+    const expectedSignalHash = buildSignalHash(getCandidateDocumentSignal(candidateUser));
+    const signalHash = verificationItem.signal_hash?.toLowerCase() ?? '';
+
+    if (!signalHash || signalHash !== expectedSignalHash) {
+      res.status(400).json({ message: '지원 자격 인증용 World ID signal 검증에 실패했습니다.' });
+      return;
+    }
+
+    const verificationResult = await verifyWorldIdResult(idkitResponse, worldIdDocumentAction);
+
+    if (!verificationResult.ok) {
+      res.status(verificationResult.status).json({ message: verificationResult.message });
+      return;
+    }
+
+    await saveCandidateDocumentCredential(candidateUser, {
+      nullifierHash: verificationItem.nullifier?.toLowerCase() ?? '',
+      signalHash,
+      credentialType: String(verificationItem.identifier ?? 'document').trim() || 'document',
+      issuerSchemaId: Number.isFinite(Number(verificationItem.issuer_schema_id))
+        ? Number(verificationItem.issuer_schema_id)
+        : null,
+      protocolVersion: idkitResponse?.protocol_version,
+      environment: idkitResponse?.environment,
+    });
+
+    const result = await verifyCandidateEligibility(candidateUser, String(req.params.jobId ?? ''));
+    res.json({
+      message: result.isEligible ? '지원 자격 인증이 완료되었습니다.' : result.reason,
+      verification: result,
+    });
+  } catch (error) {
+    console.error('Candidate eligibility verify failed:', error);
+
+    if (error && error.code === 'ER_DUP_ENTRY') {
+      res.status(409).json({
+        message: '이미 다른 계정에 연결된 문서 자격 정보입니다.',
+      });
+      return;
+    }
+
+    res.status(400).json({
+      message:
+        error instanceof Error ? error.message : '지원 자격 인증을 저장하는 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+app.post('/api/candidate/jobs/:jobId/application', (req, res) => {
+  candidateApplicationUpload.any()(req, res, async (uploadError) => {
+    if (uploadError) {
+      if (uploadError instanceof multer.MulterError && uploadError.code === 'LIMIT_FILE_SIZE') {
+        res.status(400).json({ message: 'PDF 파일 크기가 너무 큽니다.' });
+        return;
+      }
+
+      console.error('Candidate application upload failed:', uploadError);
+      res.status(400).json({
+        message: uploadError instanceof Error ? uploadError.message : '제출 파일 업로드 중 오류가 발생했습니다.',
+      });
+      return;
+    }
+
+    const candidateUser = requireCandidateSessionUser(req, res);
+
+    if (!candidateUser) {
+      return;
+    }
+
+    try {
+      const jobId = String(req.params.jobId ?? '');
+      const result = await saveCandidateJobApplication(
+        candidateUser,
+        jobId,
+        parseCandidateApplicationBody(req.body),
+        {
+          humanVerified: hasFreshCandidateHumanVerification(req, candidateUser, jobId),
+          uploadedProcessFiles: getCandidateUploadedProcessFiles(req.files),
+        },
+      );
+      res.json(result);
+    } catch (error) {
+      console.error('Candidate application save failed:', error);
+      res.status(400).json({
+        message: error instanceof Error ? error.message : '공고 저장 중 오류가 발생했습니다.',
+      });
+    }
+  });
+});
+
+app.post('/api/candidate/matches/:matchId/respond', async (req, res) => {
+  const candidateUser = requireCandidateSessionUser(req, res);
+
+  if (!candidateUser) {
+    return;
+  }
+
+  try {
+    const result = await respondToCandidateMatchRequest(
+      candidateUser,
+      String(req.params.matchId ?? ''),
+      req.body ?? {},
+      {
+        matchConsentVerified: hasFreshCandidateMatchConsentVerification(
+          req,
+          candidateUser,
+          String(req.params.matchId ?? ''),
+        ),
+      },
+    );
+    res.json(result);
+  } catch (error) {
+    console.error('Candidate match response failed:', error);
+    res.status(400).json({
+      message: error instanceof Error ? error.message : '매칭 요청 응답 처리 중 오류가 발생했습니다.',
+    });
+  }
 });
 
 app.post('/api/auth/admin/login', async (req, res) => {
@@ -668,7 +1104,7 @@ app.post('/api/company/blind/:jobId/notify', async (req, res) => {
   }
 
   try {
-    const result = await notifyCompanyBlindCandidates(companyUser, req.params.jobId);
+    const result = await notifyCompanyBlindCandidates(companyUser, req.params.jobId, req.body ?? {});
 
     if (!result) {
       res.status(404).json({ message: '알림 대상을 찾을 수 없습니다.' });
@@ -1124,23 +1560,7 @@ app.post('/api/world-id/rp-signature', async (req, res) => {
       return;
     }
 
-    const { sig, nonce, createdAt, expiresAt } = signRequest({
-      signingKeyHex: worldIdSigningKey,
-      action: worldIdAction,
-    });
-
-    res.json({
-      appId: worldIdAppId,
-      action: worldIdAction,
-      environment: worldIdEnvironment,
-      rpContext: {
-        rp_id: worldIdRpId,
-        nonce,
-        created_at: createdAt,
-        expires_at: expiresAt,
-        signature: sig,
-      },
-    });
+    res.json(buildWorldIdRpSignature(worldIdSignupAction));
   } catch (error) {
     console.error('World ID RP signature generation failed:', error);
     res.status(500).json({ message: 'World ID 인증 준비 중 오류가 발생했습니다.' });
@@ -1184,7 +1604,7 @@ app.post('/api/world-id/verify', async (req, res) => {
       return;
     }
 
-    const expectedSignalHash = hashSignal(email).toLowerCase();
+    const expectedSignalHash = buildSignalHash(email);
     const signalHash = verificationItem.signal_hash?.toLowerCase() ?? '';
 
     if (!signalHash || signalHash !== expectedSignalHash) {
@@ -1192,7 +1612,7 @@ app.post('/api/world-id/verify', async (req, res) => {
       return;
     }
 
-    const verificationResult = await verifyWorldIdResult(idkitResponse);
+    const verificationResult = await verifyWorldIdResult(idkitResponse, worldIdSignupAction);
 
     if (!verificationResult.ok) {
       res.status(verificationResult.status).json({ message: verificationResult.message });
@@ -1224,7 +1644,7 @@ app.post('/api/world-id/verify', async (req, res) => {
         `,
         [
           email,
-          worldIdAction,
+          worldIdSignupAction,
           verificationItem.nullifier.toLowerCase(),
           signalHash,
           verificationItem.identifier,
@@ -1260,23 +1680,7 @@ app.post('/api/world-id/login/rp-signature', async (_req, res) => {
   }
 
   try {
-    const { sig, nonce, createdAt, expiresAt } = signRequest({
-      signingKeyHex: worldIdSigningKey,
-      action: worldIdAction,
-    });
-
-    res.json({
-      appId: worldIdAppId,
-      action: worldIdAction,
-      environment: worldIdEnvironment,
-      rpContext: {
-        rp_id: worldIdRpId,
-        nonce,
-        created_at: createdAt,
-        expires_at: expiresAt,
-        signature: sig,
-      },
-    });
+    res.json(buildWorldIdRpSignature(worldIdSignupAction));
   } catch (error) {
     console.error('World ID login RP signature generation failed:', error);
     res.status(500).json({ message: 'World ID 로그인 준비 중 오류가 발생했습니다.' });
@@ -1301,7 +1705,7 @@ app.post('/api/world-id/login/verify', async (req, res) => {
   }
 
   try {
-    const verificationResult = await verifyWorldIdResult(idkitResponse);
+    const verificationResult = await verifyWorldIdResult(idkitResponse, worldIdSignupAction);
 
     if (!verificationResult.ok) {
       res.status(verificationResult.status).json({ message: verificationResult.message });
@@ -1325,6 +1729,14 @@ app.post('/api/world-id/login/verify', async (req, res) => {
     clearCompanySessionUser(req);
     clearAdminSessionUser(req);
     setCandidateSessionUser(req, candidateUser);
+
+    if (req.body.intent === 'job-human-verify' && req.body.jobId) {
+      setCandidateHumanVerification(req, candidateUser, req.body.jobId);
+    }
+
+    if (req.body.intent === 'match-consent-verify' && req.body.matchId) {
+      setCandidateMatchConsentVerification(req, candidateUser, req.body.matchId);
+    }
 
     res.json({
       message: 'World ID로 로그인되었습니다.',
@@ -1388,7 +1800,7 @@ app.post('/api/auth/candidate/signup', async (req, res) => {
           AND action = ?
         LIMIT 1
       `,
-      [email, worldIdAction],
+      [email, worldIdSignupAction],
     );
 
     if (worldIdRows.length === 0) {

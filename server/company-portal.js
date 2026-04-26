@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { buildDefaultCompanyAgentCatalogItems } from './company-agent-catalog.js';
 import {
   CompanyAgentEvaluationError,
@@ -7,6 +7,8 @@ import {
 } from './company-agent-evaluator.js';
 import { getCompanyCreditBootstrapConfig, getCompanyCreditProfileDefaults } from './company-credit.js';
 import { pool } from './db.js';
+import { sendCandidateMatchingEmail } from './mail.js';
+import { normalizeSubmissionSourceSnapshot } from './submission-source-reader.js';
 
 const { walletAddress: COMPANY_CREDIT_WALLET_ADDRESS, exchangeRate: COMPANY_CREDIT_EXCHANGE_RATE } =
   getCompanyCreditProfileDefaults();
@@ -692,6 +694,67 @@ function formatTimestamp(dateValue) {
   return `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function getLocalDateKey(date = new Date()) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function normalizeDateKey(value) {
+  if (!value) {
+    return '';
+  }
+
+  if (value instanceof Date) {
+    return getLocalDateKey(value);
+  }
+
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return value.trim();
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value).slice(0, 10);
+  }
+
+  return getLocalDateKey(parsed);
+}
+
+function deriveJobStatus(startDate, endDate) {
+  const todayKey = getLocalDateKey();
+  const startKey = normalizeDateKey(startDate);
+  const endKey = normalizeDateKey(endDate);
+
+  if (startKey && startKey > todayKey) {
+    return 'draft';
+  }
+
+  if (endKey && endKey < todayKey) {
+    return 'closed';
+  }
+
+  if (!endKey) {
+    return 'open';
+  }
+
+  const today = new Date(`${todayKey}T00:00:00`);
+  const deadline = new Date(`${endKey}T00:00:00`);
+  const daysUntilDeadline = Math.ceil((deadline.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+  return daysUntilDeadline <= 2 ? 'closing' : 'open';
+}
+
+function applyDerivedJobStatus(job) {
+  if (!job) {
+    return job;
+  }
+
+  return {
+    ...job,
+    status: deriveJobStatus(job.start_date ?? job.startDate, job.end_date ?? job.endDate),
+  };
+}
+
 function buildReportHistogram(candidates) {
   const bins = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
   const counts = bins.map((start) =>
@@ -903,13 +966,39 @@ function buildAgentCatalog(rows) {
   return rows.map(buildAgentCatalogItem);
 }
 
+function normalizeProcessSubmissionMethodLabel(method) {
+  const normalized = String(method ?? '').trim();
+  const lowered = normalized.toLowerCase();
+
+  if (!normalized || normalized === '제출 없음') {
+    return '';
+  }
+
+  if (normalized.includes('링크')) {
+    return '링크 제출';
+  }
+
+  if (normalized.includes('텍스트')) {
+    return '텍스트 직접 입력';
+  }
+
+  if (
+    lowered.includes('pdf') ||
+    lowered.startsWith('.')
+  ) {
+    return 'PDF(텍스트 기반)';
+  }
+
+  return normalized;
+}
+
 function sanitizeProcesses(processes) {
   return (Array.isArray(processes) ? processes : [])
     .map((process, index) => ({
       id: toNumber(process.id, index + 1),
       name: String(process.name ?? '').trim(),
       content: String(process.content ?? '').trim(),
-      submissionMethod: String(process.submissionMethod ?? '').trim(),
+      submissionMethod: normalizeProcessSubmissionMethodLabel(process.submissionMethod),
     }))
     .filter(
       (process) => process.name && process.content && process.submissionMethod,
@@ -969,7 +1058,7 @@ function buildJobRowPayload(input, agentCatalog) {
     startDate: input.form.startDate,
     endDate: input.form.endDate,
     applicantsCount: 0,
-    status: 'draft',
+    status: deriveJobStatus(input.form.startDate, input.form.endDate),
     progress: 0,
     fraudCount: null,
     description: input.form.description.trim(),
@@ -1007,6 +1096,13 @@ function sanitizeSubmissionResponses(responses) {
     .slice(0, 10);
 }
 
+function sanitizeSubmissionSources(sources) {
+  return (Array.isArray(sources) ? sources : [])
+    .map((source, index) => normalizeSubmissionSourceSnapshot(source, index))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function sanitizeEvaluationSubmission(input, index) {
   if (!input || typeof input !== 'object') {
     throw new Error(`${index + 1}번째 제출 데이터 형식이 올바르지 않습니다.`);
@@ -1018,6 +1114,7 @@ function sanitizeEvaluationSubmission(input, index) {
   const integritySignals =
     input.integritySignals && typeof input.integritySignals === 'object' ? input.integritySignals : {};
   const responses = sanitizeSubmissionResponses(input.responses);
+  const sources = sanitizeSubmissionSources(input.sources);
 
   const normalizedSubmission = {
     candidate: {
@@ -1046,6 +1143,7 @@ function sanitizeEvaluationSubmission(input, index) {
       language: toCompactText(challenge.language, 40),
     },
     responses,
+    sources,
     integritySignals: {
       focusLossCount: clampInteger(integritySignals.focusLossCount, 0, 10_000, 0),
       tabSwitchCount: clampInteger(integritySignals.tabSwitchCount, 0, 10_000, 0),
@@ -1077,6 +1175,7 @@ function sanitizeEvaluationSubmission(input, index) {
     normalizedSubmission.challenge.answerText,
     normalizedSubmission.challenge.codeText,
     ...normalizedSubmission.responses.flatMap((response) => [response.question, response.answer]),
+    ...normalizedSubmission.sources.map((source) => source.text),
   ].filter((value) => value.length > 0);
 
   if (evidenceFields.length === 0) {
@@ -1353,13 +1452,32 @@ function buildDashboardSession(job) {
 }
 
 function buildBlindCard(job) {
+  const agents = parseJsonField(job.agents_payload, []);
+  const integrityAgent = Array.isArray(agents)
+    ? agents.find((agent) => String(agent?.id ?? '').trim() === 'integrity')
+    : null;
+  const integrityWeightLabel =
+    integrityAgent && integrityAgent.selected === true
+      ? `Integrity ${Math.max(0, Math.min(100, toNumber(integrityAgent.weight, 0)))}%`
+      : 'Integrity 0%';
+
   return {
     id: job.id,
     type: job.session_type,
     status: blindStatusByJobStatus[job.status] ?? 'open',
     badge: job.badge,
     title: job.title,
+    integrityWeightLabel,
   };
+}
+
+function buildCandidateEvaluationAnonymousId(candidateUserId, jobId) {
+  const digest = createHash('sha256')
+    .update(`${jobId}:${candidateUserId}`)
+    .digest('hex')
+    .slice(0, 10);
+
+  return `wid_${digest}…`;
 }
 
 function buildJobReportResponse(job, report) {
@@ -1469,7 +1587,7 @@ async function getCompanyJobs(companyUserId) {
     [companyUserId],
   );
 
-  return rows;
+  return rows.map(applyDerivedJobStatus);
 }
 
 async function getAgentCatalogRows() {
@@ -1529,7 +1647,7 @@ async function getJobRow(companyUserId, jobId) {
     [companyUserId, jobId],
   );
 
-  return rows[0] ?? null;
+  return applyDerivedJobStatus(rows[0] ?? null);
 }
 
 async function getJobEvaluationRows(companyUserId, jobId) {
@@ -1546,6 +1664,148 @@ async function getJobEvaluationRows(companyUserId, jobId) {
   );
 
   return rows;
+}
+
+async function getCandidateProfilesForJob(jobId) {
+  const [rows] = await pool.execute(
+    `
+      SELECT cja.candidate_user_id, cu.full_name, cu.email,
+             cpp.birth_date, cpp.phone, cpp.education_summary, cpp.current_affiliation, cpp.years_experience,
+             cpp.employment_type, cpp.resume_file_name, cpp.cover_letter_file_name, cpp.share_defaults_payload
+      FROM candidate_job_applications cja
+      INNER JOIN candidate_users cu ON cu.id = cja.candidate_user_id
+      LEFT JOIN candidate_portal_profiles cpp ON cpp.candidate_user_id = cja.candidate_user_id
+      WHERE cja.job_id = ?
+        AND cja.status = 'submitted'
+    `,
+    [jobId],
+  );
+
+  return rows;
+}
+
+function normalizeCompanyMatchRequestFields(input) {
+  const allowedFields = [
+    'name',
+    'birthDate',
+    'email',
+    'phone',
+    'education',
+    'affiliation',
+    'careerYears',
+    'employmentType',
+    'resume',
+    'coverLetter',
+  ];
+  const requestFields = Array.isArray(input?.requestFields) ? input.requestFields : [];
+  const seenKeys = new Set();
+  const normalizedFields = requestFields
+    .map((field) => ({
+      key: String(field?.key ?? '').trim(),
+      required: field?.required === true,
+    }))
+    .filter((field) => field.key && allowedFields.includes(field.key))
+    .filter((field) => {
+      if (seenKeys.has(field.key)) {
+        return false;
+      }
+
+      seenKeys.add(field.key);
+      return true;
+    });
+
+  if (normalizedFields.length === 0) {
+    throw new Error('알림으로 요청할 정보를 한 개 이상 선택해주세요.');
+  }
+
+  return normalizedFields;
+}
+
+function buildCandidateMatchInfoFields(candidateProfile, requestFields) {
+  const shareDefaults = parseJsonField(candidateProfile?.share_defaults_payload, {});
+  const yearsExperience = Math.max(0, toNumber(candidateProfile?.years_experience, 0));
+  const employmentType = String(candidateProfile?.employment_type ?? '').trim();
+  const currentAffiliation = String(candidateProfile?.current_affiliation ?? '').trim();
+  const fieldSourceMap = new Map(
+    [
+    {
+      key: 'name',
+      label: '이름',
+      value: String(candidateProfile?.full_name ?? '').trim(),
+      shared: shareDefaults.name === true,
+    },
+    {
+      key: 'birthDate',
+      label: '생년월일',
+      value: String(candidateProfile?.birth_date ?? '').trim(),
+      shared: false,
+    },
+    {
+      key: 'email',
+      label: '이메일',
+      value: String(candidateProfile?.email ?? '').trim(),
+      shared: shareDefaults.email === true,
+    },
+    {
+      key: 'phone',
+      label: '연락처',
+      value: String(candidateProfile?.phone ?? '').trim(),
+      shared: shareDefaults.phone === true,
+    },
+    {
+      key: 'education',
+      label: '최종 학력',
+      value: String(candidateProfile?.education_summary ?? '').trim(),
+      shared: shareDefaults.education === true,
+    },
+    {
+      key: 'affiliation',
+      label: '현재 소속',
+      value: currentAffiliation,
+      shared: shareDefaults.career === true,
+    },
+    {
+      key: 'careerYears',
+      label: '경력 연수',
+      value: yearsExperience > 0 ? `${yearsExperience}년` : '',
+      shared: shareDefaults.career === true,
+    },
+    {
+      key: 'employmentType',
+      label: '원하는 고용 형태',
+      value: employmentType,
+      shared: shareDefaults.career === true,
+    },
+    {
+      key: 'resume',
+      label: '이력서 PDF',
+      value: String(candidateProfile?.resume_file_name ?? '').trim(),
+      shared: shareDefaults.resume === true,
+    },
+    {
+      key: 'coverLetter',
+      label: '자기소개서',
+      value: String(candidateProfile?.cover_letter_file_name ?? '').trim(),
+      shared: shareDefaults.resume === true,
+    },
+    ].map((field) => [field.key, field]),
+  );
+
+  return requestFields
+    .map((requestField) => {
+      const sourceField = fieldSourceMap.get(requestField.key);
+
+      if (!sourceField || !sourceField.value) {
+        return null;
+      }
+
+      return {
+        ...sourceField,
+        required: requestField.required,
+        shared: requestField.required ? true : sourceField.shared,
+      };
+    })
+    .filter(Boolean);
 }
 
 function getSummaryCards(jobs, profile) {
@@ -2050,6 +2310,70 @@ export async function evaluateCompanyJobSubmissions(companyUser, jobId, input) {
   };
 }
 
+export async function evaluateCandidateSubmissionForCompanyJob(companyUserId, jobId, submissionInput) {
+  await ensureCompanyPortalSeed({ id: companyUserId });
+
+  const normalizedCompanyUserId = toNumber(companyUserId);
+  const job = await getJobRow(normalizedCompanyUserId, jobId);
+
+  if (!job) {
+    throw new Error('평가할 공고를 찾을 수 없습니다.');
+  }
+
+  const submission = sanitizeEvaluationSubmission(submissionInput, 0);
+  const jobContext = buildEvaluationJobContext(job);
+  const selectedAgents = getSupportedSelectedAgents(jobContext);
+  const result = await evaluateJobSubmission(jobContext, submission, selectedAgents);
+
+  await pool.execute(
+    `
+      DELETE FROM company_job_evaluations
+      WHERE company_user_id = ?
+        AND job_id = ?
+        AND anonymous_id = ?
+    `,
+    [normalizedCompanyUserId, job.id, submission.candidate.anonymousId],
+  );
+
+  await pool.execute(
+    `
+      INSERT INTO company_job_evaluations (
+        id, company_user_id, job_id, anonymous_id, candidate_label, human_verified, selected,
+        overall_score, integrity_score, submission_payload, evaluation_payload
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      `eval-${randomUUID()}`,
+      normalizedCompanyUserId,
+      job.id,
+      submission.candidate.anonymousId,
+      submission.candidate.label || null,
+      submission.candidate.humanVerified ? 1 : 0,
+      0,
+      result.overallScore,
+      result.integrityScore,
+      JSON.stringify(result.submission),
+      JSON.stringify(result.evaluationPayload),
+    ],
+  );
+
+  const snapshot = await syncJobEvaluationSnapshot(normalizedCompanyUserId, job);
+  const refreshedJob = (await getJobRow(normalizedCompanyUserId, job.id)) ?? job;
+
+  return {
+    candidates: snapshot.candidates,
+    report: buildJobReportResponse(refreshedJob, snapshot.report),
+    summary: {
+      applicantsCount: snapshot.applicantsCount,
+      fraudCount: snapshot.fraudCount,
+      progress: snapshot.progress,
+    },
+    overallScore: result.overallScore,
+    integrityScore: result.integrityScore,
+  };
+}
+
 export async function getCompanyJobReport(companyUser, jobId) {
   await ensureCompanyPortalSeed(companyUser);
 
@@ -2143,18 +2467,98 @@ export async function updateCompanyBlindCandidateSelection(companyUser, jobId, c
   };
 }
 
-export async function notifyCompanyBlindCandidates(companyUser, jobId) {
-  const ranking = await getCompanyBlindRanking(companyUser, jobId);
+export async function notifyCompanyBlindCandidates(companyUser, jobId, input) {
+  await ensureCompanyPortalSeed(companyUser);
 
-  if (!ranking) {
+  const companyUserId = toNumber(companyUser.id);
+  const job = await getJobRow(companyUserId, jobId);
+
+  if (!job) {
     return null;
   }
 
-  const selectedCount = ranking.candidates.filter((candidate) => candidate.selected).length;
+  const evaluationRows = await getJobEvaluationRows(companyUserId, jobId);
+  const selectedEvaluations = evaluationRows.filter((row) => toNumber(row.selected) === 1);
+
+  if (selectedEvaluations.length === 0) {
+    return {
+      selectedCount: 0,
+      message: '선택된 후보가 없어 알림을 발송하지 않았습니다.',
+    };
+  }
+
+  const candidateProfiles = await getCandidateProfilesForJob(jobId);
+  const candidateProfileByAnonymousId = new Map(
+    candidateProfiles.map((row) => [buildCandidateEvaluationAnonymousId(toNumber(row.candidate_user_id), jobId), row]),
+  );
+  const requestFields = normalizeCompanyMatchRequestFields(input);
+
+  let deliveredCount = 0;
+  let skippedCount = 0;
+
+  for (const evaluationRow of selectedEvaluations) {
+    const candidateProfile = candidateProfileByAnonymousId.get(evaluationRow.anonymous_id);
+
+    if (!candidateProfile) {
+      skippedCount += 1;
+      continue;
+    }
+
+    const infoFields = buildCandidateMatchInfoFields(candidateProfile, requestFields);
+
+    if (infoFields.length === 0) {
+      skippedCount += 1;
+      continue;
+    }
+
+    await pool.execute(
+      `
+        INSERT INTO candidate_match_requests (
+          id, candidate_user_id, company_user_id, job_id, company_job_evaluation_id, anonymous_id,
+          company_name, session_title, request_type_label, status, info_fields_payload, notified_at, decision_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NOW(), NULL)
+        ON DUPLICATE KEY UPDATE
+          company_job_evaluation_id = VALUES(company_job_evaluation_id),
+          anonymous_id = VALUES(anonymous_id),
+          company_name = VALUES(company_name),
+          session_title = VALUES(session_title),
+          request_type_label = VALUES(request_type_label),
+          status = 'pending',
+          info_fields_payload = VALUES(info_fields_payload),
+          notified_at = VALUES(notified_at),
+          decision_at = NULL
+      `,
+      [
+        `match-${randomUUID()}`,
+        toNumber(candidateProfile.candidate_user_id),
+        companyUserId,
+        jobId,
+        evaluationRow.id,
+        evaluationRow.anonymous_id,
+        companyUser.companyName,
+        job.title,
+        `${job.badge} · ${job.title}`,
+        JSON.stringify(infoFields),
+      ],
+    );
+
+    await sendCandidateMatchingEmail({
+      candidateEmail: String(candidateProfile.email ?? '').trim(),
+      candidateName: String(candidateProfile.full_name ?? '').trim(),
+      companyName: companyUser.companyName,
+      sessionTitle: job.title,
+    });
+
+    deliveredCount += 1;
+  }
 
   return {
-    selectedCount,
-    message: `${selectedCount}명에게 알림을 전송했습니다.`,
+    selectedCount: deliveredCount,
+    message:
+      skippedCount > 0
+        ? `${deliveredCount}명에게 알림을 전송했습니다. ${skippedCount}건은 연결된 지원자 계정을 찾지 못해 제외되었습니다.`
+        : `${deliveredCount}명에게 알림을 전송했습니다.`,
   };
 }
 

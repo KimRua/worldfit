@@ -163,6 +163,111 @@ async function seedAdminUser() {
   );
 }
 
+async function seedCandidateDemoEligibilityJob() {
+  const demoCompanyEmail = 'demo-eligibility@worldfit.local';
+  const demoJobId = 'job-demo-eligibility';
+  const [companyRows] = await pool.execute(
+    `
+      SELECT id
+      FROM company_users
+      WHERE company_email = ?
+      LIMIT 1
+    `,
+    [demoCompanyEmail],
+  );
+
+  let companyUserId = Number(companyRows[0]?.id ?? 0);
+
+  if (!companyUserId) {
+    const passwordHash = await bcrypt.hash('demo-company-password', 12);
+    const [result] = await pool.execute(
+      `
+        INSERT INTO company_users (company_name, company_email, password_hash)
+        VALUES (?, ?, ?)
+      `,
+      ['WorldFit Demo Labs', demoCompanyEmail, passwordHash],
+    );
+
+    companyUserId = Number(result.insertId);
+  }
+
+  await pool.execute(
+    `
+      INSERT INTO company_jobs (
+        id, company_user_id, title, session_type, badge, status, applicants_count, progress, fraud_count,
+        start_date, end_date, description, detailed_description, capacity, capacity_display,
+        visibility_scope, eligible_age, eligible_countries, expected_applicants, processes_payload,
+        agents_payload, evaluation_criteria_payload, blind_candidates_payload, report_payload
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 0, 18, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        company_user_id = VALUES(company_user_id),
+        title = VALUES(title),
+        session_type = VALUES(session_type),
+        badge = VALUES(badge),
+        status = VALUES(status),
+        start_date = VALUES(start_date),
+        end_date = VALUES(end_date),
+        description = VALUES(description),
+        detailed_description = VALUES(detailed_description),
+        capacity = VALUES(capacity),
+        capacity_display = VALUES(capacity_display),
+        visibility_scope = VALUES(visibility_scope),
+        eligible_age = VALUES(eligible_age),
+        eligible_countries = VALUES(eligible_countries),
+        expected_applicants = VALUES(expected_applicants),
+        processes_payload = VALUES(processes_payload),
+        agents_payload = VALUES(agents_payload),
+        evaluation_criteria_payload = VALUES(evaluation_criteria_payload)
+    `,
+    [
+      demoJobId,
+      companyUserId,
+      '지원 자격 인증 테스트 공고',
+      'recruiting',
+      '채용',
+      'open',
+      '2026-04-20',
+      '2026-05-20',
+      '월드에 등록된 신분증 기반 자격 정보로 연령과 국적을 확인하는 데모 공고입니다.',
+      '지원 전에 인간 인증과 지원 자격 인증을 모두 다시 통과해야 합니다. 대한민국 국적이며 성인 자격을 가진 계정으로 테스트할 수 있습니다.',
+      12,
+      'exact',
+      '공개',
+      'adult',
+      JSON.stringify(['KR']),
+      24,
+      JSON.stringify([
+        {
+          id: 1,
+          name: 'GitHub 링크 제출',
+          content: '구현 저장소와 README를 제출하세요.',
+          submissionMethod: 'GitHub 링크',
+        },
+        {
+          id: 2,
+          name: '포트폴리오 PDF 제출',
+          content: '핵심 문제 해결 과정과 결과를 정리한 PDF를 제출하세요.',
+          submissionMethod: 'PDF 업로드',
+        },
+      ]),
+      JSON.stringify([
+        { id: 'technical', name: 'Technical Evaluator', selected: true, weight: 35 },
+        { id: 'reasoning', name: 'Reasoning Evaluator', selected: true, weight: 25 },
+        { id: 'communication', name: 'Communication Evaluator', selected: true, weight: 20 },
+        { id: 'integrity', name: 'Integrity Evaluator', selected: true, weight: 20 },
+      ]),
+      JSON.stringify({
+        focus: '월드 자격 인증과 제출 품질을 함께 확인합니다.',
+        strengths: '요구사항 충족과 문제 해결 과정을 중점으로 봅니다.',
+        risks: '자격 조건 불일치 시 제출이 차단됩니다.',
+      }),
+      JSON.stringify([]),
+      JSON.stringify({}),
+    ],
+  );
+}
+
 export async function ensureDatabase() {
   const connection = await mysql.createConnection({
     host: dbHost,
@@ -448,6 +553,133 @@ export async function ensureDatabase() {
         ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS candidate_portal_profiles (
+      candidate_user_id BIGINT UNSIGNED NOT NULL,
+      birth_date VARCHAR(16) NOT NULL DEFAULT '',
+      phone VARCHAR(32) NOT NULL DEFAULT '',
+      education_summary VARCHAR(255) NOT NULL DEFAULT '',
+      current_affiliation VARCHAR(255) NOT NULL DEFAULT '',
+      years_experience INT NOT NULL DEFAULT 0,
+      employment_type VARCHAR(120) NOT NULL DEFAULT '',
+      resume_file_name VARCHAR(255) NOT NULL DEFAULT '',
+      resume_file_size_label VARCHAR(32) NOT NULL DEFAULT '',
+      cover_letter_file_name VARCHAR(255) NOT NULL DEFAULT '',
+      cover_letter_file_size_label VARCHAR(32) NOT NULL DEFAULT '',
+      share_defaults_payload JSON NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (candidate_user_id),
+      CONSTRAINT fk_candidate_portal_profiles_user
+        FOREIGN KEY (candidate_user_id) REFERENCES candidate_users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await addColumnIfMissing(
+    'candidate_portal_profiles',
+    'favorite_job_ids_payload',
+    "JSON NOT NULL DEFAULT ('[]')",
+  );
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS candidate_job_applications (
+      id VARCHAR(64) NOT NULL,
+      candidate_user_id BIGINT UNSIGNED NOT NULL,
+      job_id VARCHAR(64) NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'draft',
+      human_verified TINYINT(1) NOT NULL DEFAULT 0,
+      eligibility_verified TINYINT(1) NOT NULL DEFAULT 0,
+      process_responses_payload JSON NOT NULL,
+      github_url VARCHAR(255) NOT NULL DEFAULT '',
+      portfolio_file_name VARCHAR(255) NOT NULL DEFAULT '',
+      portfolio_file_size_label VARCHAR(32) NOT NULL DEFAULT '',
+      portfolio_upload_progress INT NOT NULL DEFAULT 0,
+      submitted_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_candidate_job_applications_candidate_job (candidate_user_id, job_id),
+      KEY idx_candidate_job_applications_job (job_id),
+      CONSTRAINT fk_candidate_job_applications_user
+        FOREIGN KEY (candidate_user_id) REFERENCES candidate_users(id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_candidate_job_applications_job
+        FOREIGN KEY (job_id) REFERENCES company_jobs(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS candidate_match_requests (
+      id VARCHAR(64) NOT NULL,
+      candidate_user_id BIGINT UNSIGNED NOT NULL,
+      company_user_id BIGINT UNSIGNED NOT NULL,
+      job_id VARCHAR(64) NOT NULL,
+      company_job_evaluation_id VARCHAR(64) NULL,
+      anonymous_id VARCHAR(120) NOT NULL,
+      company_name VARCHAR(255) NOT NULL,
+      session_title VARCHAR(255) NOT NULL,
+      request_type_label VARCHAR(255) NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      info_fields_payload JSON NOT NULL,
+      notified_at DATETIME NOT NULL,
+      decision_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_candidate_match_requests_candidate_job (candidate_user_id, job_id),
+      KEY idx_candidate_match_requests_candidate (candidate_user_id, notified_at),
+      KEY idx_candidate_match_requests_company_job (company_user_id, job_id),
+      CONSTRAINT fk_candidate_match_requests_candidate
+        FOREIGN KEY (candidate_user_id) REFERENCES candidate_users(id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_candidate_match_requests_company
+        FOREIGN KEY (company_user_id) REFERENCES company_users(id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_candidate_match_requests_job
+        FOREIGN KEY (job_id) REFERENCES company_jobs(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await addColumnIfMissing(
+    'candidate_job_applications',
+    'process_responses_payload',
+    "JSON NOT NULL DEFAULT ('[]') AFTER eligibility_verified",
+  );
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS candidate_world_document_credentials (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      candidate_user_id BIGINT UNSIGNED NOT NULL,
+      credential_kind VARCHAR(32) NOT NULL DEFAULT 'document',
+      nullifier_hash VARCHAR(255) NOT NULL,
+      signal_hash VARCHAR(255) NOT NULL,
+      credential_type VARCHAR(64) NOT NULL,
+      issuer_schema_id BIGINT UNSIGNED NULL,
+      protocol_version VARCHAR(16) NOT NULL,
+      environment VARCHAR(32) NOT NULL,
+      age_bracket VARCHAR(16) NULL,
+      age_over_18 TINYINT(1) NULL,
+      country_code VARCHAR(8) NULL,
+      raw_claims_payload JSON NOT NULL,
+      verified_at DATETIME NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_candidate_world_document_credentials_candidate_kind (candidate_user_id, credential_kind),
+      UNIQUE KEY uq_candidate_world_document_credentials_nullifier (nullifier_hash),
+      CONSTRAINT fk_candidate_world_document_credentials_user
+        FOREIGN KEY (candidate_user_id) REFERENCES candidate_users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await addColumnIfMissing(
+    'candidate_world_document_credentials',
+    'issuer_schema_id',
+    'BIGINT UNSIGNED NULL AFTER credential_type',
+  );
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS company_fraud_cases (

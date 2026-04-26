@@ -8,6 +8,7 @@ import {
 } from '@worldcoin/idkit';
 import { MiniKit } from '@worldcoin/minikit-js';
 import { useMiniKit } from '@worldcoin/minikit-js/minikit-provider';
+import CandidateDashboard from './CandidateDashboard';
 import {
   ApiError,
   changeAdminPassword,
@@ -137,6 +138,7 @@ type CompanyBlindSelectionCard = {
   status: CompanyBlindSelectionStatus;
   badge: string;
   title: string;
+  integrityWeightLabel?: string;
 };
 
 type CompanyBlindRankingCandidate = {
@@ -150,6 +152,22 @@ type CompanyBlindRankingCandidate = {
   }[];
   integrityScore: number;
   selected: boolean;
+  summary?: string;
+  strengths?: string[];
+  risks?: string[];
+  improvementTags?: string[];
+  agentBreakdown?: Record<
+    string,
+    {
+      score: number;
+      confidence: number;
+      summary: string;
+      strengths: string[];
+      risks: string[];
+      evidence: string[];
+      improvementTags: string[];
+    }
+  >;
 };
 
 type CompanyBlindRankingHumanFilter = 'all' | 'verified' | 'unverified';
@@ -157,6 +175,24 @@ type CompanyBlindRankingSortOrder = 'desc' | 'asc';
 type CompanyBlindRankingDetailTab = 'overview' | 'tech' | 'reason' | 'comm' | 'creat' | 'integrity';
 type CompanyJobTypeFilter = 'all' | CompanySessionType;
 type CompanyJobStatusFilterKey = 'all' | 'draft' | 'open' | 'closed';
+type CompanyBlindMatchRequestFieldKey =
+  | 'name'
+  | 'birthDate'
+  | 'email'
+  | 'phone'
+  | 'education'
+  | 'affiliation'
+  | 'careerYears'
+  | 'employmentType'
+  | 'resume'
+  | 'coverLetter';
+type CompanyBlindMatchRequestFieldOption = {
+  key: CompanyBlindMatchRequestFieldKey;
+  label: string;
+  description: string;
+  selected: boolean;
+  required: boolean;
+};
 
 type CompanyBlindRankingTabSection = {
   heading: string;
@@ -324,6 +360,19 @@ const initialCandidateLoginForm: CandidateLoginForm = {
   verificationCode: '',
 };
 
+const defaultCompanyBlindMatchRequestFields: CompanyBlindMatchRequestFieldOption[] = [
+  { key: 'name', label: '이름', description: '지원자 실명을 요청합니다.', selected: true, required: true },
+  { key: 'email', label: '이메일', description: '직접 연락할 이메일을 요청합니다.', selected: true, required: true },
+  { key: 'phone', label: '연락처', description: '후속 연락을 위한 연락처를 요청합니다.', selected: true, required: false },
+  { key: 'education', label: '최종 학력', description: '학력 정보를 요청합니다.', selected: true, required: false },
+  { key: 'affiliation', label: '현재 소속', description: '현재 소속 정보를 요청합니다.', selected: true, required: false },
+  { key: 'careerYears', label: '경력 연수', description: '누적 경력 연수를 요청합니다.', selected: true, required: false },
+  { key: 'employmentType', label: '원하는 고용 형태', description: '지원자가 원하는 고용 형태를 요청합니다.', selected: false, required: false },
+  { key: 'resume', label: '이력서 PDF', description: '이력서 파일 정보를 요청합니다.', selected: true, required: false },
+  { key: 'coverLetter', label: '자기소개서', description: '자기소개서 파일 정보를 요청합니다.', selected: false, required: false },
+  { key: 'birthDate', label: '생년월일', description: '생년월일 정보를 요청합니다.', selected: false, required: false },
+];
+
 const initialCompanyCreateForm: CompanyCreateForm = {
   title: '',
   description: '',
@@ -490,14 +539,7 @@ function getCompanyVerificationBadge(form: CompanyVerificationForm) {
 const companyCreateSubmissionOptions = [
   '링크 제출',
   '텍스트 직접 입력',
-  '.pdf',
-  '.hwp/hwpx',
-  '.jpg/jpeg',
-  '.doc/docx',
-  '.xls/xlsx',
-  '.png',
-  '.svg',
-  '.zip',
+  'PDF(텍스트 기반)',
   '제출 없음',
 ] as const;
 
@@ -719,7 +761,7 @@ const companyCreateAgentDetailCatalog: Record<string, CompanyCreateAgentDetail> 
     reviewCount: '1,032',
     criteriaTitle: '평가 기준 (5축)',
     criteria: [
-      { title: '표절 유사도', description: '외부 자료 및 세션 내 제출물과의 유사성' },
+      { title: '표절 유사도', description: '외부 자료 및 공고 내 제출물과의 유사성' },
       { title: '생성형 흔적', description: 'AI 대필 패턴과 문체 변화 탐지' },
       { title: '행동 이상', description: '비정상 속도, 반복 입력, 세션 패턴 분석' },
       { title: '출처 불일치', description: '근거와 결과물 사이 불일치 여부' },
@@ -907,26 +949,15 @@ const companyJobStatusFilters = [
   { key: 'closed', label: '종료' },
 ] as const satisfies readonly { key: CompanyJobStatusFilterKey; label: string }[];
 
-const companyBlindRankingDetailTabs = [
-  { key: 'overview', label: '종합 정보' },
-  { key: 'tech', label: 'Tech 35%' },
-  { key: 'reason', label: 'Reason 25%' },
-  { key: 'comm', label: 'Comm 25%' },
-  { key: 'creat', label: 'Creat 10%' },
-  { key: 'integrity', label: 'Integrity 15%' },
-] as const satisfies readonly { key: CompanyBlindRankingDetailTab; label: string }[];
-
 const companyBlindRankingFallbackTabMeta: Record<
   Exclude<CompanyBlindRankingDetailTab, 'overview'>,
   {
-    metricLabel?: string;
     focusLabel: string;
     summary: string;
     items: { title: string; description: string }[];
   }
 > = {
   tech: {
-    metricLabel: 'Tech 35%',
     focusLabel: '기술 역량',
     summary: '핵심 구현 역량과 구조적 완성도를 기준으로 다시 검토할 가치가 있습니다.',
     items: [
@@ -937,7 +968,6 @@ const companyBlindRankingFallbackTabMeta: Record<
     ],
   },
   reason: {
-    metricLabel: 'Reason 25%',
     focusLabel: '문제 해결력',
     summary: '주어진 문제를 구조화하고 우선순위를 정하는 방식이 비교적 일관됩니다.',
     items: [
@@ -948,7 +978,6 @@ const companyBlindRankingFallbackTabMeta: Record<
     ],
   },
   comm: {
-    metricLabel: 'Comm 25%',
     focusLabel: '커뮤니케이션',
     summary: '설명 구조와 전달력이 비교적 안정적이며 협업 맥락을 이해하고 있습니다.',
     items: [
@@ -959,7 +988,6 @@ const companyBlindRankingFallbackTabMeta: Record<
     ],
   },
   creat: {
-    metricLabel: 'Creat 10%',
     focusLabel: '창의성',
     summary: '기본 요구사항 안에서 현실적인 개선 아이디어를 제안하는 편입니다.',
     items: [
@@ -989,9 +1017,86 @@ function getCompanyBlindRankingMetricScore(
     return candidate.integrityScore;
   }
 
-  const label = companyBlindRankingFallbackTabMeta[tab].metricLabel;
+  return candidate.metrics.find((metric) => normalizeCompanyBlindRankingMetricTab(metric.label) === tab)?.score ?? 0;
+}
 
-  return candidate.metrics.find((metric) => metric.label === label)?.score ?? 0;
+function normalizeCompanyBlindRankingMetricTab(metricLabel: string): Exclude<CompanyBlindRankingDetailTab, 'overview' | 'integrity'> | null {
+  const normalized = metricLabel.trim().toLowerCase();
+
+  if (normalized.startsWith('tech')) {
+    return 'tech';
+  }
+
+  if (normalized.startsWith('reason')) {
+    return 'reason';
+  }
+
+  if (normalized.startsWith('comm')) {
+    return 'comm';
+  }
+
+  if (normalized.startsWith('creat')) {
+    return 'creat';
+  }
+
+  return null;
+}
+
+function getCompanyBlindRankingTabAgentId(
+  tab: Exclude<CompanyBlindRankingDetailTab, 'overview'>,
+): 'technical' | 'reasoning' | 'communication' | 'creativity' | 'integrity' {
+  if (tab === 'tech') {
+    return 'technical';
+  }
+
+  if (tab === 'reason') {
+    return 'reasoning';
+  }
+
+  if (tab === 'comm') {
+    return 'communication';
+  }
+
+  if (tab === 'creat') {
+    return 'creativity';
+  }
+
+  return 'integrity';
+}
+
+function getCompanyBlindRankingDetailTabs(
+  candidate: CompanyBlindRankingCandidate | null,
+  integrityWeightLabel?: string,
+) {
+  if (!candidate) {
+    return [{ key: 'overview', label: '종합 정보' }] as const satisfies readonly {
+      key: CompanyBlindRankingDetailTab;
+      label: string;
+    }[];
+  }
+
+  const rawMetricTabs = candidate.metrics
+    .map((metric) => {
+      const key = normalizeCompanyBlindRankingMetricTab(metric.label);
+
+      if (!key) {
+        return null;
+      }
+
+      return {
+        key,
+        label: metric.label,
+      };
+    });
+  const metricTabs = rawMetricTabs.filter((tab): tab is { key: Exclude<CompanyBlindRankingDetailTab, 'overview' | 'integrity'>; label: string } =>
+    tab !== null,
+  ).filter((tab, index, array) => array.findIndex((item) => item.key === tab.key) === index);
+
+  return [
+    { key: 'overview', label: '종합 정보' },
+    ...metricTabs,
+    { key: 'integrity', label: integrityWeightLabel || 'Integrity' },
+  ] as const satisfies readonly { key: CompanyBlindRankingDetailTab; label: string }[];
 }
 
 function getCompanyBlindRankingFallbackTabSection(
@@ -1023,6 +1128,63 @@ function getCompanyBlindRankingCandidateDetail(candidate: CompanyBlindRankingCan
     candidate.integrityScore >= 90 ? '무결성 신호도 안정적입니다.' : '무결성 관련 추가 확인이 권장됩니다.';
   const scoreTone =
     candidate.overallScore >= 85 ? '상위권 성과를 보였습니다.' : candidate.overallScore >= 75 ? '전반적으로 안정적인 평가를 받았습니다.' : '추가 검토가 필요한 구간이 있습니다.';
+  const tabSections = Object.fromEntries(
+    ([
+      'tech',
+      'reason',
+      'comm',
+      'creat',
+      'integrity',
+    ] as const).map((tab) => {
+      const agentId = getCompanyBlindRankingTabAgentId(tab);
+      const breakdown = candidate.agentBreakdown?.[agentId];
+
+      if (!breakdown) {
+        return [tab, undefined];
+      }
+
+      const score =
+        tab === 'integrity'
+          ? candidate.integrityScore
+          : candidate.metrics.find((metric) => normalizeCompanyBlindRankingMetricTab(metric.label) === tab)?.score ??
+            breakdown.score;
+      const items = [
+        {
+          index: 1,
+          title: '실제 평가 점수',
+          score: `${Math.round(score)} / 100`,
+          description: breakdown.summary || '세부 요약이 없습니다.',
+        },
+        ...breakdown.strengths.slice(0, 2).map((item, index) => ({
+          index: index + 2,
+          title: '강점',
+          score: `신뢰도 ${Math.round(breakdown.confidence)}%`,
+          description: item,
+        })),
+        ...breakdown.risks.slice(0, 1).map((item, index) => ({
+          index: index + 4,
+          title: '보완 포인트',
+          score: '추가 확인',
+          description: item,
+        })),
+        ...breakdown.evidence.slice(0, 1).map((item, index) => ({
+          index: index + 5,
+          title: '평가 근거',
+          score: 'Evidence',
+          description: item,
+        })),
+      ].slice(0, 4);
+
+      return [
+        tab,
+        {
+          heading: '실제 평가 상세',
+          summary: breakdown.summary || `${candidate.anonymousId} 지원자의 실제 평가 결과입니다.`,
+          items,
+        },
+      ];
+    }),
+  ) as Partial<Record<CompanyBlindRankingDetailTab, CompanyBlindRankingTabSection>>;
 
   return {
     confidenceSummary: candidate.humanVerified
@@ -1031,8 +1193,10 @@ function getCompanyBlindRankingCandidateDetail(candidate: CompanyBlindRankingCan
     rating: `★★★★☆ ${(candidate.overallScore / 20 + 0.1).toFixed(1)}`,
     recommendation: candidate.overallScore >= 85 ? '강력 추천' : candidate.overallScore >= 78 ? '추천' : '보류 검토',
     overviewSummaryTitle: '종합 평가 요약',
-    overviewSummary: `${candidate.anonymousId} 지원자는 ${scoreTone} 가장 강한 영역은 ${strengthLabel}이며, ${weaknessLabel} 항목은 후속 확인이 필요합니다. ${integrityTone}`,
-    tabSections: {},
+    overviewSummary:
+      candidate.summary ||
+      `${candidate.anonymousId} 지원자는 ${scoreTone} 가장 강한 영역은 ${strengthLabel}이며, ${weaknessLabel} 항목은 후속 확인이 필요합니다. ${integrityTone}`,
+    tabSections,
   };
 }
 
@@ -1253,8 +1417,11 @@ function App() {
   const [companyBlindRankingSortOrder, setCompanyBlindRankingSortOrder] =
     useState<CompanyBlindRankingSortOrder>('desc');
   const [isCompanyBlindRankingMinimumScoreEnabled, setIsCompanyBlindRankingMinimumScoreEnabled] =
-    useState(true);
+    useState(false);
   const [isCompanyBlindRankingNotifyModalOpen, setIsCompanyBlindRankingNotifyModalOpen] = useState(false);
+  const [companyBlindMatchRequestFields, setCompanyBlindMatchRequestFields] = useState<
+    CompanyBlindMatchRequestFieldOption[]
+  >(defaultCompanyBlindMatchRequestFields);
   const [selectedCompanyBlindRankingCandidateId, setSelectedCompanyBlindRankingCandidateId] = useState<string | null>(null);
   const [companyBlindRankingDetailTab, setCompanyBlindRankingDetailTab] =
     useState<CompanyBlindRankingDetailTab>('overview');
@@ -1407,15 +1574,20 @@ function App() {
 
   useEffect(() => {
     const isCompanyDashboardScreen = screen === 'companyTemp' && Boolean(authCompanyUser);
+    const isCandidateDashboardScreen = screen === 'candidateTemp' && Boolean(authCandidateUser);
 
     document.documentElement.classList.toggle('app-html--company-dashboard', isCompanyDashboardScreen);
     document.body.classList.toggle('app-body--company-dashboard', isCompanyDashboardScreen);
+    document.documentElement.classList.toggle('app-html--candidate-dashboard', isCandidateDashboardScreen);
+    document.body.classList.toggle('app-body--candidate-dashboard', isCandidateDashboardScreen);
 
     return () => {
       document.documentElement.classList.remove('app-html--company-dashboard');
       document.body.classList.remove('app-body--company-dashboard');
+      document.documentElement.classList.remove('app-html--candidate-dashboard');
+      document.body.classList.remove('app-body--candidate-dashboard');
     };
-  }, [authCompanyUser, screen]);
+  }, [authCandidateUser, authCompanyUser, screen]);
 
   useEffect(() => {
     setCompanySettingsForm(getInitialCompanySettingsForm(authCompanyUser, companySettingsPreferences));
@@ -3477,6 +3649,7 @@ function App() {
 
     setSelectedCompanyBlindRankingCandidateId(null);
     setCompanyBlindRankingDetailTab('overview');
+    setIsCompanyBlindRankingMinimumScoreEnabled(false);
     setCompanyDashboardView('blindRanking');
   };
 
@@ -3514,6 +3687,7 @@ function App() {
 
   const openCompanyBlindRankingNotifyModal = () => {
     if (companyBlindRankingRows.some((candidate) => candidate.selected)) {
+      setCompanyBlindMatchRequestFields(defaultCompanyBlindMatchRequestFields);
       setIsCompanyBlindRankingNotifyModalOpen(true);
     }
   };
@@ -3522,19 +3696,68 @@ function App() {
     setIsCompanyBlindRankingNotifyModalOpen(false);
   };
 
+  const toggleCompanyBlindMatchRequestField = (fieldKey: CompanyBlindMatchRequestFieldKey) => {
+    setCompanyBlindMatchRequestFields((current) =>
+      current.map((field) => {
+        if (field.key !== fieldKey) {
+          return field;
+        }
+
+        const nextSelected = !field.selected;
+
+        return {
+          ...field,
+          selected: nextSelected,
+          required: nextSelected ? field.required : false,
+        };
+      }),
+    );
+  };
+
+  const toggleCompanyBlindMatchRequestFieldRequired = (fieldKey: CompanyBlindMatchRequestFieldKey) => {
+    setCompanyBlindMatchRequestFields((current) =>
+      current.map((field) =>
+        field.key === fieldKey && field.selected
+          ? {
+              ...field,
+              required: !field.required,
+            }
+          : field,
+      ),
+    );
+  };
+
   const confirmCompanyBlindRankingNotify = async () => {
     const selectedCount = companyBlindRankingRows.filter((candidate) => candidate.selected).length;
-    setIsCompanyBlindRankingNotifyModalOpen(false);
+    const requestedFields = companyBlindMatchRequestFields
+      .filter((field) => field.selected)
+      .map((field) => ({
+        key: field.key,
+        required: field.required,
+      }));
 
     if (!selectedCompanyBlindCard?.id) {
       return;
     }
 
+    if (requestedFields.length === 0) {
+      setCompanySettingsToastMessage('요청할 정보를 한 개 이상 선택해주세요.');
+      setCompanySettingsToastId((current) => current + 1);
+      return;
+    }
+
+    setIsCompanyBlindRankingNotifyModalOpen(false);
+
     try {
-      const response = await sendCompanyBlindRankingNotifications(selectedCompanyBlindCard.id);
+      const response = await sendCompanyBlindRankingNotifications({
+        jobId: selectedCompanyBlindCard.id,
+        requestFields: requestedFields,
+      });
       setCompanySettingsToastMessage(response.message);
-    } catch {
-      setCompanySettingsToastMessage(`${selectedCount}명에게 알림을 전송했습니다.`);
+    } catch (error) {
+      setCompanySettingsToastMessage(
+        error instanceof Error ? error.message : `${selectedCount}명에게 알림을 전송하는 중 오류가 발생했습니다.`,
+      );
     }
 
     setCompanySettingsToastId((current) => current + 1);
@@ -4621,16 +4844,29 @@ function App() {
           ? 'blind'
           : companyDashboardView;
     const selectedCompanyBlindRankingCount = companyBlindRankingRows.filter((candidate) => candidate.selected).length;
+    const selectedCompanyBlindMatchRequestFieldCount = companyBlindMatchRequestFields.filter((field) => field.selected).length;
+    const requiredCompanyBlindMatchRequestFieldCount = companyBlindMatchRequestFields.filter(
+      (field) => field.selected && field.required,
+    ).length;
     const selectedCompanyBlindRankingCandidate = selectedCompanyBlindRankingCandidateId
       ? companyBlindRankingRows.find((candidate) => candidate.id === selectedCompanyBlindRankingCandidateId) ?? null
       : null;
+    const activeCompanyBlindRankingTabs = getCompanyBlindRankingDetailTabs(
+      selectedCompanyBlindRankingCandidate,
+      selectedCompanyBlindCard?.integrityWeightLabel,
+    );
+    const resolvedCompanyBlindRankingDetailTab = activeCompanyBlindRankingTabs.some(
+      (tab) => tab.key === companyBlindRankingDetailTab,
+    )
+      ? companyBlindRankingDetailTab
+      : 'overview';
     const selectedCompanyBlindRankingCandidateDetail = selectedCompanyBlindRankingCandidate
       ? getCompanyBlindRankingCandidateDetail(selectedCompanyBlindRankingCandidate)
       : null;
     const activeCompanyBlindRankingTabSection =
-      selectedCompanyBlindRankingCandidate && companyBlindRankingDetailTab !== 'overview'
-        ? selectedCompanyBlindRankingCandidateDetail?.tabSections[companyBlindRankingDetailTab] ??
-          getCompanyBlindRankingFallbackTabSection(selectedCompanyBlindRankingCandidate, companyBlindRankingDetailTab)
+      selectedCompanyBlindRankingCandidate && resolvedCompanyBlindRankingDetailTab !== 'overview'
+        ? selectedCompanyBlindRankingCandidateDetail?.tabSections[resolvedCompanyBlindRankingDetailTab] ??
+          getCompanyBlindRankingFallbackTabSection(selectedCompanyBlindRankingCandidate, resolvedCompanyBlindRankingDetailTab)
         : null;
     const visibleCompanyBlindRankingRows = [...companyBlindRankingRows]
       .filter((candidate) => {
@@ -5075,148 +5311,145 @@ function App() {
             </>
           ) : companyDashboardView === 'blindRanking' ? (
             <>
-              {visibleCompanyBlindRankingRows.length > 0 ? (
-                <>
-                  <section className="company-blind-ranking-summary company-dashboard-card">
-                    <div className="company-blind-ranking-summary__copy">
-                      <span className="company-blind-ranking-summary__badge">블라인드 모드 · 신원 정보 완전 비공개</span>
-                      <strong>{selectedCompanyBlindCard?.title ?? '선택된 공고가 없습니다.'}</strong>
-                      <p>
-                        {selectedCompanyBlindCard
-                          ? `${companyBlindRankingRows.length}명 평가 완료 · 상위 N명 선발 후 매칭 동의 알림 발송`
-                          : '블라인드 랭킹을 볼 공고를 먼저 선택해주세요.'}
-                      </p>
-                    </div>
-
-                    <div className="company-blind-ranking-summary__actions">
-                      <button
-                        type="button"
-                        className={`company-blind-ranking-summary__filter${companyBlindRankingHumanFilter !== 'all' ? ' company-blind-toolbar__filter--active' : ''}`}
-                        onClick={cycleCompanyBlindRankingHumanFilter}
-                      >
-                        {companyBlindRankingHumanFilter === 'all'
-                          ? '인간 인증 여부'
-                          : companyBlindRankingHumanFilter === 'verified'
-                            ? '인간 인증: 인증됨'
-                            : '인간 인증: 미인증'}
-                      </button>
-                      <button
-                        type="button"
-                        className="company-blind-ranking-summary__filter"
-                        onClick={toggleCompanyBlindRankingSortOrder}
-                      >
-                        {`정렬: 종합 점수 ${companyBlindRankingSortOrder === 'desc' ? '↓' : '↑'}`}
-                      </button>
-                      <button
-                        type="button"
-                        className={`company-blind-ranking-summary__filter${isCompanyBlindRankingMinimumScoreEnabled ? ' company-blind-toolbar__filter--active' : ''}`}
-                        onClick={toggleCompanyBlindRankingMinimumScore}
-                      >
-                        {isCompanyBlindRankingMinimumScoreEnabled ? '점수 최소 75 ↑' : '점수 전체 보기'}
-                      </button>
-                      <button
-                        type="button"
-                        className="company-blind-ranking-summary__notify"
-                        onClick={openCompanyBlindRankingNotifyModal}
-                        disabled={selectedCompanyBlindRankingCount === 0}
-                      >
-                        {`선택 ${selectedCompanyBlindRankingCount}명 · 알림 발송`}
-                      </button>
-                    </div>
-                  </section>
-
-                  <section className="company-blind-ranking-board company-dashboard-card" aria-label="블라인드 랭킹 목록">
-                    <div className="company-blind-ranking-board__scroller">
-                      <div
-                        className="company-blind-ranking-board__row company-blind-ranking-board__row--head"
-                        style={{ gridTemplateColumns: companyBlindRankingGridTemplate }}
-                      >
-                        <span>#</span>
-                        <span>익명 ID</span>
-                        <span>인간 인증</span>
-                        <span>종합</span>
-                        {companyBlindRankingMetricLabels.map((label) => (
-                          <span key={label}>{label}</span>
-                        ))}
-                        <span>Integrity 5%</span>
-                        <span>선택</span>
-                      </div>
-
-                      {visibleCompanyBlindRankingRows.map((candidate, index) => (
-                        <div
-                          key={candidate.id}
-                          className={`company-blind-ranking-board__row company-blind-ranking-board__row--interactive${selectedCompanyBlindRankingCandidateId === candidate.id ? ' company-blind-ranking-board__row--active' : ''}`}
-                          style={{ gridTemplateColumns: companyBlindRankingGridTemplate }}
-                          role="button"
-                          tabIndex={0}
-                          aria-label={`${candidate.anonymousId} 상세 보기`}
-                          onClick={() => openCompanyBlindRankingDetail(candidate.id)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault();
-                              openCompanyBlindRankingDetail(candidate.id);
-                            }
-                          }}
-                        >
-                          <strong>{index + 1}</strong>
-                          <div className="company-blind-ranking-board__identity">
-                            <span className="company-blind-ranking-board__avatar" aria-hidden="true" />
-                            <span>{candidate.anonymousId}</span>
-                          </div>
-                          <span
-                            className={`company-blind-ranking-board__human${candidate.humanVerified ? ' company-blind-ranking-board__human--positive' : ' company-blind-ranking-board__human--negative'}`}
-                          >
-                            {candidate.humanVerified ? '인증됨' : '인증 안 됨'}
-                          </span>
-                          <strong>{candidate.overallScore.toFixed(1)}</strong>
-                          {candidate.metrics.map((metric) => (
-                            <div key={`${candidate.id}-${metric.label}`} className="company-blind-ranking-board__metric">
-                              <div className="company-blind-ranking-board__track">
-                                <span style={{ width: `${metric.score}%` }} />
-                              </div>
-                              <em>{metric.score}</em>
-                            </div>
-                          ))}
-                          <span
-                            className={`company-blind-ranking-board__integrity${candidate.integrityScore >= 90 ? ' company-blind-ranking-board__integrity--positive' : ' company-blind-ranking-board__integrity--negative'}`}
-                          >
-                            {candidate.integrityScore}
-                          </span>
-                          <button
-                            type="button"
-                            className="company-blind-ranking-board__selection-wrap"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleCompanyBlindRankingSelection(candidate.id);
-                            }}
-                            aria-pressed={candidate.selected}
-                          >
-                            <span
-                              className={`company-blind-ranking-board__selection-box${candidate.selected ? ' company-blind-ranking-board__selection-box--active' : ''}`}
-                              aria-hidden="true"
-                            >
-                              {candidate.selected ? '✓' : ''}
-                            </span>
-                            <span
-                              className={`company-blind-ranking-board__selection${candidate.selected ? ' company-blind-ranking-board__selection--active' : ''}`}
-                            >
-                              {candidate.selected ? '선택됨' : '선택'}
-                            </span>
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                </>
-              ) : (
-                <div
-                  className="company-dashboard-empty-state company-dashboard-empty-state--blind-ranking company-dashboard-empty-state--centered"
-                  aria-label="블라인드 랭킹 빈 상태"
-                  style={{ minHeight: '320px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <p>표시할 블라인드 랭킹 데이터가 없습니다.</p>
+              <section className="company-blind-ranking-summary company-dashboard-card">
+                <div className="company-blind-ranking-summary__copy">
+                  <span className="company-blind-ranking-summary__badge">블라인드 모드 · 신원 정보 완전 비공개</span>
+                  <strong>{selectedCompanyBlindCard?.title ?? '선택된 공고가 없습니다.'}</strong>
+                  <p>
+                    {selectedCompanyBlindCard
+                      ? `${companyBlindRankingRows.length}명 평가 완료 · 상위 N명 선발 후 매칭 동의 알림 발송`
+                      : '블라인드 랭킹을 볼 공고를 먼저 선택해주세요.'}
+                  </p>
                 </div>
-              )}
+
+                <div className="company-blind-ranking-summary__actions">
+                  <button
+                    type="button"
+                    className={`company-blind-ranking-summary__filter${companyBlindRankingHumanFilter !== 'all' ? ' company-blind-toolbar__filter--active' : ''}`}
+                    onClick={cycleCompanyBlindRankingHumanFilter}
+                  >
+                    {companyBlindRankingHumanFilter === 'all'
+                      ? '인간 인증 여부'
+                      : companyBlindRankingHumanFilter === 'verified'
+                        ? '인간 인증: 인증됨'
+                        : '인간 인증: 미인증'}
+                  </button>
+                  <button
+                    type="button"
+                    className="company-blind-ranking-summary__filter"
+                    onClick={toggleCompanyBlindRankingSortOrder}
+                  >
+                    {`정렬: 종합 점수 ${companyBlindRankingSortOrder === 'desc' ? '↓' : '↑'}`}
+                  </button>
+                  <button
+                    type="button"
+                    className={`company-blind-ranking-summary__filter${isCompanyBlindRankingMinimumScoreEnabled ? ' company-blind-toolbar__filter--active' : ''}`}
+                    onClick={toggleCompanyBlindRankingMinimumScore}
+                  >
+                    {isCompanyBlindRankingMinimumScoreEnabled ? '점수 최소 75 ↑' : '점수 전체 보기'}
+                  </button>
+                  <button
+                    type="button"
+                    className="company-blind-ranking-summary__notify"
+                    onClick={openCompanyBlindRankingNotifyModal}
+                    disabled={selectedCompanyBlindRankingCount === 0}
+                  >
+                    {`선택 ${selectedCompanyBlindRankingCount}명 · 알림 발송`}
+                  </button>
+                </div>
+              </section>
+
+              <section className="company-blind-ranking-board company-dashboard-card" aria-label="블라인드 랭킹 목록">
+                {visibleCompanyBlindRankingRows.length > 0 ? (
+                  <div className="company-blind-ranking-board__scroller">
+                    <div
+                      className="company-blind-ranking-board__row company-blind-ranking-board__row--head"
+                      style={{ gridTemplateColumns: companyBlindRankingGridTemplate }}
+                    >
+                      <span>#</span>
+                      <span>익명 ID</span>
+                      <span>인간 인증</span>
+                      <span>종합</span>
+                      {companyBlindRankingMetricLabels.map((label) => (
+                        <span key={label}>{label}</span>
+                      ))}
+                      <span>{selectedCompanyBlindCard?.integrityWeightLabel ?? 'Integrity'}</span>
+                      <span>선택</span>
+                    </div>
+
+                    {visibleCompanyBlindRankingRows.map((candidate, index) => (
+                      <div
+                        key={candidate.id}
+                        className={`company-blind-ranking-board__row company-blind-ranking-board__row--interactive${selectedCompanyBlindRankingCandidateId === candidate.id ? ' company-blind-ranking-board__row--active' : ''}`}
+                        style={{ gridTemplateColumns: companyBlindRankingGridTemplate }}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${candidate.anonymousId} 상세 보기`}
+                        onClick={() => openCompanyBlindRankingDetail(candidate.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            openCompanyBlindRankingDetail(candidate.id);
+                          }
+                        }}
+                      >
+                        <strong>{index + 1}</strong>
+                        <div className="company-blind-ranking-board__identity">
+                          <span>{candidate.anonymousId}</span>
+                        </div>
+                        <span
+                          className={`company-blind-ranking-board__human${candidate.humanVerified ? ' company-blind-ranking-board__human--positive' : ' company-blind-ranking-board__human--negative'}`}
+                        >
+                          {candidate.humanVerified ? '인증됨' : '인증 안 됨'}
+                        </span>
+                        <strong>{candidate.overallScore.toFixed(1)}</strong>
+                        {candidate.metrics.map((metric) => (
+                          <div key={`${candidate.id}-${metric.label}`} className="company-blind-ranking-board__metric">
+                            <div className="company-blind-ranking-board__track">
+                              <span style={{ width: `${metric.score}%` }} />
+                            </div>
+                            <em>{metric.score}</em>
+                          </div>
+                        ))}
+                        <span
+                          className={`company-blind-ranking-board__integrity${candidate.integrityScore >= 90 ? ' company-blind-ranking-board__integrity--positive' : ' company-blind-ranking-board__integrity--negative'}`}
+                        >
+                          {candidate.integrityScore}
+                        </span>
+                        <button
+                          type="button"
+                          className="company-blind-ranking-board__selection-wrap"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleCompanyBlindRankingSelection(candidate.id);
+                          }}
+                          aria-pressed={candidate.selected}
+                        >
+                          <span
+                            className={`company-blind-ranking-board__selection-box${candidate.selected ? ' company-blind-ranking-board__selection-box--active' : ''}`}
+                            aria-hidden="true"
+                          >
+                            {candidate.selected ? '✓' : ''}
+                          </span>
+                          <span
+                            className={`company-blind-ranking-board__selection${candidate.selected ? ' company-blind-ranking-board__selection--active' : ''}`}
+                          >
+                            {candidate.selected ? '선택됨' : '선택'}
+                          </span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    className="company-dashboard-empty-state company-dashboard-empty-state--blind-ranking company-dashboard-empty-state--centered"
+                    aria-label="블라인드 랭킹 빈 상태"
+                    style={{ minHeight: '320px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <p>표시할 블라인드 랭킹 데이터가 없습니다.</p>
+                  </div>
+                )}
+              </section>
             </>
           ) : companyDashboardView === 'fraud' ? (
             <>
@@ -6948,13 +7181,13 @@ function App() {
               </div>
 
               <div className="company-blind-ranking-detail-modal__tabs" role="tablist" aria-label="지원자 상세 탭">
-                {companyBlindRankingDetailTabs.map((tab) => (
+                {activeCompanyBlindRankingTabs.map((tab) => (
                   <button
                     key={tab.key}
                     type="button"
                     role="tab"
-                    aria-selected={companyBlindRankingDetailTab === tab.key}
-                    className={`company-blind-ranking-detail-modal__tab${companyBlindRankingDetailTab === tab.key ? ' company-blind-ranking-detail-modal__tab--active' : ''}`}
+                    aria-selected={resolvedCompanyBlindRankingDetailTab === tab.key}
+                    className={`company-blind-ranking-detail-modal__tab${resolvedCompanyBlindRankingDetailTab === tab.key ? ' company-blind-ranking-detail-modal__tab--active' : ''}`}
                     onClick={() => setCompanyBlindRankingDetailTab(tab.key)}
                   >
                     {tab.label}
@@ -6965,12 +7198,12 @@ function App() {
               <div className="company-blind-ranking-detail-modal__body">
                 <section className="company-blind-ranking-detail-modal__section">
                   <h4>
-                    {companyBlindRankingDetailTab === 'overview'
+                    {resolvedCompanyBlindRankingDetailTab === 'overview'
                       ? selectedCompanyBlindRankingCandidateDetail.overviewSummaryTitle
                       : activeCompanyBlindRankingTabSection?.heading}
                   </h4>
                   <p>
-                    {companyBlindRankingDetailTab === 'overview'
+                    {resolvedCompanyBlindRankingDetailTab === 'overview'
                       ? selectedCompanyBlindRankingCandidateDetail.overviewSummary
                       : activeCompanyBlindRankingTabSection?.summary}
                   </p>
@@ -7028,7 +7261,44 @@ function App() {
                 </button>
               </div>
 
-              <p>{`선택한 ${selectedCompanyBlindRankingCount}명에게 알림 발송하시겠습니까?`}</p>
+              <p>{`선택한 ${selectedCompanyBlindRankingCount}명에게 어떤 정보를 요청할지 설정해주세요.`}</p>
+
+              <div className="company-blind-ranking-notify-modal__summary">
+                <span>{`요청 ${selectedCompanyBlindMatchRequestFieldCount}개`}</span>
+                <span>{`필수 ${requiredCompanyBlindMatchRequestFieldCount}개`}</span>
+              </div>
+
+              <div className="company-blind-ranking-notify-modal__fields" aria-label="요청 정보 선택">
+                {companyBlindMatchRequestFields.map((field) => (
+                  <label key={field.key} className="company-blind-ranking-notify-modal__field">
+                    <div className="company-blind-ranking-notify-modal__field-main">
+                      <input
+                        type="checkbox"
+                        checked={field.selected}
+                        onChange={() => toggleCompanyBlindMatchRequestField(field.key)}
+                      />
+                      <div className="company-blind-ranking-notify-modal__field-copy">
+                        <strong>{field.label}</strong>
+                        <span>{field.description}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className={`company-blind-ranking-notify-modal__field-tag${
+                        field.required ? ' company-blind-ranking-notify-modal__field-tag--active' : ''
+                      }`}
+                      onClick={() => toggleCompanyBlindMatchRequestFieldRequired(field.key)}
+                      disabled={!field.selected}
+                    >
+                      {field.required ? '필수' : '선택'}
+                    </button>
+                  </label>
+                ))}
+              </div>
+
+              <div className="company-blind-ranking-notify-modal__notice">
+                필수 요청 항목은 후보자가 모두 동의해야 매칭 공개를 완료할 수 있습니다.
+              </div>
 
               <div className="company-blind-ranking-notify-modal__actions">
                 <button
@@ -7042,6 +7312,7 @@ function App() {
                   type="button"
                   className="company-blind-ranking-notify-modal__button"
                   onClick={confirmCompanyBlindRankingNotify}
+                  disabled={selectedCompanyBlindMatchRequestFieldCount === 0}
                 >
                   발송하기
                 </button>
@@ -7220,50 +7491,7 @@ function App() {
   }
 
   if (screen === 'candidateTemp' && authCandidateUser) {
-    return (
-      <div className="page-shell temp-page-shell">
-        <main className="temp-page">
-          <div className="temp-page__badge">임시 페이지</div>
-          <h1>
-            {authCandidateUser.name} 님, {candidateAuthMode === 'signup' ? '가입이 완료되었습니다.' : '로그인되었습니다.'}
-          </h1>
-          <p>
-            {candidateAuthMode === 'signup'
-              ? '개인 회원가입과 자동 로그인이 정상적으로 완료되었습니다.'
-              : '개인 로그인이 정상적으로 완료되었습니다.'}
-            다음 단계 구현 전까지는 이 페이지를 임시 랜딩으로 사용합니다.
-          </p>
-
-          <div className="temp-page__summary">
-            <div>
-              <span>이름</span>
-              <strong>{authCandidateUser.name}</strong>
-            </div>
-            <div>
-              <span>이메일</span>
-              <strong>{authCandidateUser.email}</strong>
-            </div>
-          </div>
-
-          <div className="temp-page__actions">
-            <button
-              type="button"
-              className="ghost-button ghost-button--wide"
-              onClick={() => setScreen('landing')}
-            >
-              랜딩 보기
-            </button>
-            <button
-              type="button"
-              className="solid-button solid-button--wide"
-              onClick={handleCompanyLogout}
-            >
-              로그아웃
-            </button>
-          </div>
-        </main>
-      </div>
-    );
+    return <CandidateDashboard user={authCandidateUser} onLogout={handleCompanyLogout} />;
   }
 
   if (screen === 'candidateSignup') {

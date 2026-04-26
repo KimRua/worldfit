@@ -17,6 +17,165 @@ export type CandidateSessionUser = {
   email: string;
 };
 
+export type CandidateExploreSession = {
+  id: string;
+  title: string;
+  organization: string;
+  location: string;
+  mode: string;
+  description: string;
+  inviteCode: string;
+  typeLabel: string;
+  filterKey: 'recruiting' | 'contest' | 'audition' | 'education';
+  status: 'draft' | 'open' | 'closing';
+  deadline: string;
+  deadlineDays: number;
+  processes: CandidateSessionProcess[];
+  requirements: string[];
+  detailLines: string[];
+  eligibilityLines: string[];
+  weights: string[];
+};
+
+export type CandidateSessionProcess = {
+  id: number;
+  name: string;
+  content: string;
+  submissionMethod: string;
+};
+
+export type CandidatePortfolioFile = {
+  name: string;
+  sizeLabel: string;
+  uploadProgress: number;
+};
+
+export type CandidateProcessResponse = {
+  processId: number;
+  value: string;
+  file: CandidatePortfolioFile | null;
+};
+
+export type CandidateSavedApplication = {
+  sessionId: string;
+  status: 'draft' | 'submitted';
+  humanVerified: boolean;
+  eligibilityVerified: boolean;
+  processResponses: CandidateProcessResponse[];
+  githubUrl: string;
+  portfolioFile: CandidatePortfolioFile | null;
+  updatedAtLabel: string;
+  session: CandidateExploreSession | null;
+};
+
+export type CandidateReportAgentScore = {
+  label: string;
+  weightLabel: string;
+  score: number;
+};
+
+export type CandidateReport = {
+  id: string;
+  sessionId: string;
+  title: string;
+  organization: string;
+  location: string;
+  mode: string;
+  typeLabel: string;
+  weights: string[];
+  submittedAt: string;
+  statusLabel: string;
+  overallScore: number;
+  percentileLabel: string;
+  agentScores: CandidateReportAgentScore[];
+  strengths: string[];
+  improvements: {
+    title: string;
+    description: string;
+  }[];
+};
+
+export type CandidateMatchField = {
+  key: string;
+  label: string;
+  value: string;
+  shared: boolean;
+  required?: boolean;
+};
+
+export type CandidateMatchRecord = {
+  id: string;
+  company: string;
+  sessionTitle: string;
+  requestTypeLabel: string;
+  requestedAt: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  infoFields: CandidateMatchField[];
+};
+
+export type CandidateSettingsShareKey = 'name' | 'email' | 'phone' | 'education' | 'career' | 'resume';
+
+export type CandidateSettingsAttachment = {
+  id: string;
+  label: string;
+  fileName: string;
+  sizeLabel?: string;
+  emptyLabel?: string;
+};
+
+export type CandidateSettingsForm = {
+  name: string;
+  birthDate: string;
+  email: string;
+  phone: string;
+  education: string;
+  affiliation: string;
+  careerYears: string;
+  employmentType: string;
+  attachments: CandidateSettingsAttachment[];
+  shareDefaults: Record<CandidateSettingsShareKey, boolean>;
+};
+
+export type CandidateEligibilityStatus = {
+  requiresDocumentCredential: boolean;
+  documentVerified: boolean;
+  isEligible: boolean;
+  ageEligible: boolean;
+  countryEligible: boolean;
+  reason: string;
+  documentCountryCode?: string;
+  ageBracket?: string | null;
+  ageOver18?: boolean | null;
+};
+
+export type CandidateDocumentCredentialSummary = {
+  credentialType: string;
+  issuerSchemaId?: number | null;
+  countryCode: string | null;
+  ageBracket: string | null;
+  ageOver18: boolean | null;
+  verifiedAt: string;
+};
+
+export type CandidatePortalBootstrap = {
+  explore: {
+    sessions: CandidateExploreSession[];
+    favoriteSessionIds: string[];
+  };
+  applications: CandidateSavedApplication[];
+  settings: {
+    unlocked: boolean;
+    form: CandidateSettingsForm;
+  };
+  verification: {
+    documentCredential: CandidateDocumentCredentialSummary | null;
+  };
+  dashboard: {
+    reports: CandidateReport[];
+    matching: CandidateMatchRecord[];
+  };
+};
+
 export type CandidateVerificationResponse = {
   message: string;
   retryAfterSeconds?: number;
@@ -70,6 +229,7 @@ export type CompanyBlindSelectionCard = {
   status: 'open' | 'closing';
   badge: string;
   title: string;
+  integrityWeightLabel?: string;
 };
 
 export type CompanyBlindRankingCandidate = {
@@ -83,6 +243,22 @@ export type CompanyBlindRankingCandidate = {
   }[];
   integrityScore: number;
   selected: boolean;
+  summary?: string;
+  strengths?: string[];
+  risks?: string[];
+  improvementTags?: string[];
+  agentBreakdown?: Record<
+    string,
+    {
+      score: number;
+      confidence: number;
+      summary: string;
+      strengths: string[];
+      risks: string[];
+      evidence: string[];
+      improvementTags: string[];
+    }
+  >;
 };
 
 export type CompanyFraudCaseStatus = 'pending' | 'investigating' | 'resolved' | 'dismissed';
@@ -320,6 +496,7 @@ export type WorldIdRpSignature = {
   appId: `app_${string}`;
   action: string;
   environment: WorldIdEnvironment;
+  signal?: string;
   rpContext: {
     rp_id: `rp_${string}`;
     nonce: string;
@@ -466,6 +643,9 @@ export function createCandidateLoginWorldIdRpSignature() {
 
 export function loginCandidateWithWorldId(input: {
   idkitResponse: unknown;
+  intent?: 'settings-unlock' | 'job-human-verify' | 'match-consent-verify';
+  jobId?: string;
+  matchId?: string;
 }) {
   return request<{ candidateUser: CandidateSessionUser; message: string }>(
     '/api/world-id/login/verify',
@@ -601,6 +781,92 @@ export function fetchCompanyPortalBootstrap() {
   return request<CompanyPortalBootstrap>('/api/company/portal/bootstrap');
 }
 
+export function fetchCandidatePortalBootstrap() {
+  return request<CandidatePortalBootstrap>('/api/candidate/portal/bootstrap');
+}
+
+export function saveCandidatePortalSettings(input: CandidateSettingsForm) {
+  return request<{
+    message: string;
+    candidateUser: CandidateSessionUser;
+    settings: CandidateSettingsForm;
+  }>('/api/candidate/settings', {
+    method: 'PUT',
+    body: input,
+  });
+}
+
+export function saveCandidateFavorites(input: { favoriteSessionIds: string[] }) {
+  return request<{ message: string; favoriteSessionIds: string[] }>('/api/candidate/favorites', {
+    method: 'PUT',
+    body: input,
+  });
+}
+
+export function fetchCandidateJobEligibility(jobId: string) {
+  return request<CandidateEligibilityStatus>(`/api/candidate/jobs/${jobId}/eligibility`);
+}
+
+export function createCandidateEligibilityWorldIdRpSignature(jobId: string) {
+  return request<WorldIdRpSignature>(`/api/candidate/jobs/${jobId}/eligibility/world-id/rp-signature`, {
+    method: 'POST',
+  });
+}
+
+export function verifyCandidateEligibilityWithWorldId(input: {
+  jobId: string;
+  idkitResponse: unknown;
+}) {
+  return request<{ message: string; verification: CandidateEligibilityStatus }>(
+    `/api/candidate/jobs/${input.jobId}/eligibility/world-id/verify`,
+    {
+      method: 'POST',
+      body: {
+        idkitResponse: input.idkitResponse,
+      },
+    },
+  );
+}
+
+export function saveCandidateJobApplication(input: {
+  jobId: string;
+  status: CandidateSavedApplication['status'];
+  processResponses: CandidateProcessResponse[];
+  processFiles?: Record<number, File>;
+}) {
+  const formData = new FormData();
+  formData.append('status', input.status);
+  formData.append('processResponses', JSON.stringify(input.processResponses));
+
+  for (const [processId, file] of Object.entries(input.processFiles ?? {})) {
+    if (file instanceof File) {
+      formData.append(`processFile_${processId}`, file);
+    }
+  }
+
+  return requestFormData<{ message: string; applications: CandidateSavedApplication[]; reports: CandidateReport[] }>(
+    `/api/candidate/jobs/${input.jobId}/application`,
+    formData,
+  );
+}
+
+export function respondToCandidateMatchRequest(input: {
+  matchId: string;
+  status: CandidateMatchRecord['status'];
+  infoFields: CandidateMatchField[];
+}) {
+  return request<{ message: string; record: CandidateMatchRecord }>(
+    `/api/candidate/matches/${input.matchId}/respond`,
+    {
+      method: 'POST',
+      body: {
+        status: input.status,
+        infoFields: input.infoFields,
+      },
+    },
+  );
+}
+
 export function saveCompanyPortalSettings(input: {
   companyName: string;
   contact: string;
@@ -730,9 +996,15 @@ export function setCompanyBlindRankingSelection(
   });
 }
 
-export function sendCompanyBlindRankingNotifications(jobId: string) {
-  return request<{ message: string; selectedCount: number }>(`/api/company/blind/${jobId}/notify`, {
+export function sendCompanyBlindRankingNotifications(input: {
+  jobId: string;
+  requestFields: Array<{ key: string; required: boolean }>;
+}) {
+  return request<{ message: string; selectedCount: number }>(`/api/company/blind/${input.jobId}/notify`, {
     method: 'POST',
+    body: {
+      requestFields: input.requestFields,
+    },
   });
 }
 

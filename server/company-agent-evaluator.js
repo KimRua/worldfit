@@ -175,6 +175,32 @@ function formatArray(values, emptyLabel = '없음') {
   return values.map((value) => `- ${value}`).join('\n');
 }
 
+function formatSubmissionSources(sources) {
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return '없음';
+  }
+
+  return sources
+    .map((source, index) => {
+      const heading = source.kind === 'pdf' ? `PDF 자료 ${index + 1}` : `URL 자료 ${index + 1}`;
+      const detailLines = [
+        `라벨: ${trimText(source.label, 120) || '미제공'}`,
+        source.kind === 'pdf'
+          ? `파일: ${trimText(source.fileName, 160) || '미제공'} / ${Math.max(0, Number(source.pageCount ?? 0) || 0)}페이지`
+          : `원본 URL: ${trimText(source.originalUrl, 240) || '미제공'}`,
+        source.kind === 'url' && source.resolvedUrl
+          ? `최종 URL: ${trimText(source.resolvedUrl, 240)}`
+          : '',
+        source.contentType ? `콘텐츠 유형: ${trimText(source.contentType, 80)}` : '',
+        source.title ? `제목: ${trimText(source.title, 160)}` : '',
+        `본문:\n${truncateText(source.text, 8000) || '미제공'}`,
+      ].filter(Boolean);
+
+      return `[${heading}]\n${detailLines.join('\n')}`;
+    })
+    .join('\n\n');
+}
+
 function buildSubmissionPrompt(submission) {
   const skills = Array.isArray(submission.profile.skills) ? submission.profile.skills : [];
   const responses = Array.isArray(submission.responses) ? submission.responses : [];
@@ -198,6 +224,7 @@ function buildSubmissionPrompt(submission) {
     `경력 요약:\n${truncateText(submission.profile.workHistorySummary, 2500) || '미제공'}`,
     `학력 요약:\n${truncateText(submission.profile.educationSummary, 2000) || '미제공'}`,
     `포트폴리오 요약:\n${truncateText(submission.profile.portfolioText, 4000) || '미제공'}`,
+    `실제 제출 자료 본문:\n${formatSubmissionSources(submission.sources)}`,
     `과제 문제:\n${truncateText(submission.challenge.prompt, 2500) || '미제공'}`,
     `과제 답변:\n${truncateText(submission.challenge.answerText, 6000) || '미제공'}`,
     `제출 코드 (${trimText(submission.challenge.language, 40) || '언어 미상'}):\n${truncateText(submission.challenge.codeText, 12000) || '미제공'}`,
@@ -209,7 +236,7 @@ function buildSubmissionPrompt(submission) {
 function buildJobPrompt(jobContext) {
   return [
     `공고명: ${jobContext.title}`,
-    `세션 유형: ${jobContext.sessionType}`,
+    `공고 유형: ${jobContext.sessionType}`,
     `짧은 설명: ${jobContext.description || '미제공'}`,
     `상세 설명:\n${truncateText(jobContext.detailedDescription, 5000) || '미제공'}`,
     `평가 초점:\n${jobContext.evaluationCriteria.focus || '미제공'}`,

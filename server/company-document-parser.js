@@ -30,6 +30,10 @@ function normalizeExtractedPdfText(value) {
   return normalized.trim();
 }
 
+export function normalizeCompanyPdfExtractedText(value) {
+  return normalizeExtractedPdfText(value);
+}
+
 function isPdfFile(file) {
   if (!file) {
     return false;
@@ -54,7 +58,20 @@ export async function extractTextFromCompanyPdfFile(file, options = {}) {
     throw new CompanyPdfParseError('업로드된 PDF 파일을 읽을 수 없습니다.', 400);
   }
 
-  const parser = new PDFParse({ data: file.buffer });
+  const result = await extractTextFromCompanyPdfBuffer(file.buffer, options);
+
+  return {
+    fileName: String(file.originalname ?? 'document.pdf'),
+    ...result,
+  };
+}
+
+export async function extractTextFromCompanyPdfBuffer(buffer, options = {}) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new CompanyPdfParseError('업로드된 PDF 파일을 읽을 수 없습니다.', 400);
+  }
+
+  const parser = new PDFParse({ data: buffer });
 
   try {
     const result = await parser.getText();
@@ -70,7 +87,6 @@ export async function extractTextFromCompanyPdfFile(file, options = {}) {
     const finalText = normalizedText.slice(0, companyPdfExtractedTextMaxChars);
 
     return {
-      fileName: String(file.originalname ?? 'document.pdf'),
       target: String(options.target ?? '').trim() || null,
       pageCount: Number(result?.total ?? 0),
       characterCount: normalizedText.length,
