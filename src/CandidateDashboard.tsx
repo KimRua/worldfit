@@ -71,7 +71,6 @@ type CandidateDashboardSession = {
 type CandidateDashboardGrowthPoint = {
   month: string;
   value: number;
-  barHeight: number;
 };
 
 type CandidateExploreFilter = {
@@ -258,15 +257,6 @@ const CANDIDATE_DASHBOARD_SESSIONS: CandidateDashboardSession[] = [
 const CANDIDATE_DASHBOARD_REPORTS = ['report-backend-7291', 'report-ux-audition', 'report-public-data'];
 
 const CANDIDATE_DASHBOARD_MATCH_REQUESTS = ['match-oo-startup', 'match-dd-electronics'];
-
-const CANDIDATE_DASHBOARD_GROWTH: CandidateDashboardGrowthPoint[] = [
-  { month: '11월', value: 8, barHeight: 14 },
-  { month: '12월', value: 26, barHeight: 33 },
-  { month: '1월', value: 42, barHeight: 74 },
-  { month: '2월', value: 68, barHeight: 107 },
-  { month: '3월', value: 55, barHeight: 89 },
-  { month: '4월', value: 82, barHeight: 161 },
-];
 
 const CANDIDATE_EXPLORE_FILTERS: CandidateExploreFilter[] = [
   { key: 'all', label: '전체' },
@@ -1089,6 +1079,139 @@ function matchesHistoryFilter(record: CandidateMatchRecord, filter: CandidateMat
   return record.status === 'pending';
 }
 
+function parseCandidateReportSubmittedAt(value: string) {
+  const normalized = value.replace(/^제출\s*/, '').trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = new Date(normalized.replace(' ', 'T'));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatCandidateGrowthMonth(date: Date) {
+  return `${date.getMonth() + 1}월`;
+}
+
+function getCandidateGrowthMonthKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getCandidateGrowthMetricScore(
+  report: CandidateReport,
+  metric: 'technical' | 'reasoning' | 'communication',
+) {
+  const matched = report.agentScores.find((item) => {
+    const label = item.label.trim().toLowerCase();
+
+    if (metric === 'technical') {
+      return label.includes('technical') || label.startsWith('tech');
+    }
+
+    if (metric === 'reasoning') {
+      return label.includes('reasoning') || label.startsWith('reason');
+    }
+
+    return label.includes('communication') || label.startsWith('comm');
+  });
+
+  return matched?.score ?? null;
+}
+
+function formatGrowthDelta(value: number) {
+  if (value > 0) {
+    return `+${value}`;
+  }
+
+  if (value < 0) {
+    return String(value);
+  }
+
+  return '0';
+}
+
+function buildCandidateGrowthModel(reports: CandidateReport[]) {
+  const completedReports = reports
+    .map((report) => ({
+      report,
+      submittedAt: parseCandidateReportSubmittedAt(report.submittedAt),
+    }))
+    .filter(
+      (item): item is { report: CandidateReport; submittedAt: Date } =>
+        item.report.status === 'completed' &&
+        item.report.overallScore > 0 &&
+        item.submittedAt instanceof Date,
+    )
+    .sort((left, right) => left.submittedAt.getTime() - right.submittedAt.getTime());
+
+  const latestSubmittedAt = completedReports[completedReports.length - 1]?.submittedAt ?? null;
+  const anchorDate =
+    latestSubmittedAt && latestSubmittedAt.getTime() > Date.now() ? new Date(latestSubmittedAt) : new Date();
+  const monthStarts = Array.from({ length: 6 }, (_, index) => {
+    const monthDate = new Date(anchorDate.getFullYear(), anchorDate.getMonth() - (5 - index), 1);
+    return monthDate;
+  });
+
+  const scoreMap = new Map<string, number[]>();
+  completedReports.forEach(({ report, submittedAt }) => {
+    const monthKey = getCandidateGrowthMonthKey(submittedAt);
+    const scores = scoreMap.get(monthKey) ?? [];
+    scores.push(report.overallScore);
+    scoreMap.set(monthKey, scores);
+  });
+
+  const points: CandidateDashboardGrowthPoint[] = monthStarts.map((monthDate) => {
+    const scores = scoreMap.get(getCandidateGrowthMonthKey(monthDate)) ?? [];
+    const averageScore =
+      scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0;
+
+    return {
+      month: formatCandidateGrowthMonth(monthDate),
+      value: scores.length > 0 ? Math.round(averageScore) : 0,
+    };
+  });
+
+  if (completedReports.length === 0) {
+    return {
+      hasData: false,
+      points,
+      summaryText: '평가가 완료된 리포트가 쌓이면 최근 6개월 성장 추이가 표시됩니다.',
+    };
+  }
+
+  if (completedReports.length === 1) {
+    const latestReport = completedReports[0].report;
+    const technical = getCandidateGrowthMetricScore(latestReport, 'technical');
+    const reasoning = getCandidateGrowthMetricScore(latestReport, 'reasoning');
+    const communication = getCandidateGrowthMetricScore(latestReport, 'communication');
+
+    return {
+      hasData: true,
+      points,
+      summaryText: `가장 최근 평가 기준 기술 ${technical ?? '-'} · 사고력 ${reasoning ?? '-'} · 커뮤니케이션 ${communication ?? '-'}`,
+    };
+  }
+
+  const earliestReport = completedReports[0].report;
+  const latestReport = completedReports[completedReports.length - 1].report;
+  const technicalDelta =
+    (getCandidateGrowthMetricScore(latestReport, 'technical') ?? 0) -
+    (getCandidateGrowthMetricScore(earliestReport, 'technical') ?? 0);
+  const reasoningDelta =
+    (getCandidateGrowthMetricScore(latestReport, 'reasoning') ?? 0) -
+    (getCandidateGrowthMetricScore(earliestReport, 'reasoning') ?? 0);
+  const communicationDelta =
+    (getCandidateGrowthMetricScore(latestReport, 'communication') ?? 0) -
+    (getCandidateGrowthMetricScore(earliestReport, 'communication') ?? 0);
+
+  return {
+    hasData: true,
+    points,
+    summaryText: `기술 ${formatGrowthDelta(technicalDelta)} · 사고력 ${formatGrowthDelta(reasoningDelta)} · 커뮤니케이션 ${formatGrowthDelta(communicationDelta)}`,
+  };
+}
+
 type CandidateHomeViewProps = {
   greetingName: string;
   favoriteSessions: CandidateExploreSession[];
@@ -1123,13 +1246,17 @@ function CandidateHomeView({
   const baseline = 170;
   const barWidth = 82;
   const columnGap = 34;
-  const points = CANDIDATE_DASHBOARD_GROWTH.map((item, index) => {
+  const growthModel = buildCandidateGrowthModel(reports);
+  const maxGrowthValue = Math.max(...growthModel.points.map((point) => point.value), 0);
+  const points = growthModel.points.map((item, index) => {
     const x = 20 + index * (barWidth + columnGap);
     const centerX = x + barWidth / 2;
-    const y = baseline - item.barHeight;
+    const barHeight = maxGrowthValue > 0 ? Math.round((item.value / maxGrowthValue) * 161) : 0;
+    const y = baseline - barHeight;
 
     return {
       ...item,
+      barHeight,
       x,
       centerX,
       y,
@@ -1213,10 +1340,18 @@ function CandidateHomeView({
           <article className="candidate-dashboard-panel candidate-dashboard-growth">
             <div className="candidate-dashboard-growth__header">
               <h2>성장 추적 — 최근 6개월</h2>
-              <p>기술 +12  ·  사고력 +8  ·  커뮤니케이션 +4</p>
+              <p>{growthModel.summaryText}</p>
             </div>
 
-            <div className="candidate-dashboard-growth__chart" role="img" aria-label="최근 6개월 성장 추적 그래프">
+            <div
+              className="candidate-dashboard-growth__chart"
+              role="img"
+              aria-label={
+                growthModel.hasData
+                  ? '최근 6개월 실제 평가 데이터를 반영한 성장 추적 그래프'
+                  : '최근 6개월 성장 추적 그래프, 아직 표시할 평가 데이터 없음'
+              }
+            >
               <svg className="candidate-dashboard-growth__svg" viewBox={`0 0 ${svgWidth} ${svgHeight}`} aria-hidden="true">
                 {points.map((point) => (
                   <g key={point.month}>
