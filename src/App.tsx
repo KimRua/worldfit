@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
+import { ChangeEvent, FormEvent, MouseEvent, useEffect, useState } from 'react';
 import {
   IDKitErrorCodes,
   IDKitRequestWidget,
@@ -61,8 +61,19 @@ import {
 type Role = 'candidate' | 'organizer';
 type ModalStep = 'role' | 'signup' | 'success';
 type LoginModalStep = 'role' | 'form';
-type Screen = 'landing' | 'candidateSignup' | 'companySignup' | 'companyTemp' | 'candidateTemp' | 'admin';
+type Screen =
+  | 'landing'
+  | 'landingWorldIdDetail'
+  | 'landingMultiAgentDetail'
+  | 'landingExpandableAuthDetail'
+  | 'candidateSignup'
+  | 'companySignup'
+  | 'companyTemp'
+  | 'candidateTemp'
+  | 'admin';
 type CandidateLoginMethod = 'worldId' | 'email';
+type CookieConsent = 'accepted' | 'rejected';
+type LegalDocumentKey = 'terms' | 'consent';
 type CompanyDashboardView = 'home' | 'jobs' | 'blind' | 'blindRanking' | 'report' | 'create' | 'fraud' | 'credit' | 'settings';
 type CompanyCreateStage = 1 | 2 | 3;
 type CompanyCreateAgentDetailTab = 'criteria' | 'behavior' | 'domains';
@@ -868,29 +879,242 @@ function getCompanyCreateAgentDetail(agent: CompanyCreateAgent): CompanyCreateAg
   );
 }
 
+const landingCookieConsentStorageKey = 'worldfit-cookie-consent';
+const legalDocumentCatalog: Record<
+  LegalDocumentKey,
+  { title: string; src: string; footerLabel: string }
+> = {
+  terms: {
+    title: '이용약관',
+    src: '/legal/terms.html',
+    footerLabel: '이용약관',
+  },
+  consent: {
+    title: '개인정보 수집·이용 동의서',
+    src: '/legal/consent.html',
+    footerLabel: '개인정보 수집·이용 동의서',
+  },
+};
+
+function getInitialCookieConsent(): CookieConsent | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const storedValue = window.localStorage.getItem(landingCookieConsentStorageKey);
+  return storedValue === 'accepted' || storedValue === 'rejected' ? storedValue : null;
+}
+
 const landingFeatureCards = [
   {
-    icon: '🧠',
-    title: '멀티 에이전트',
-    description: [
-      '5종 이상의 AI가 서로의 결과를 모른 채 독립 평가.',
-      '가중치는 기업이 직접 설정.',
-    ],
-  },
-  {
-    icon: '🪪',
-    title: 'World ID',
+    id: 'worldIdApplicant',
+    icon: '🌍',
+    title: 'World ID 기반 지원자 인증',
     description: [
       '실제 사람만 참여.',
       '중복·봇 차단. 개인정보는 매칭 동의 전까지 비공개.',
     ],
   },
   {
-    icon: '⛓️',
-    title: '온체인 감사',
+    id: 'multiAgent',
+    icon: '🧠',
+    title: '멀티 AI 에이전트 평가',
     description: [
-      '모든 평가 로그가 블록체인에 기록되어',
-      '언제든 재현성을 검증할 수 있음.',
+      '여러 AI 에이전트가 서로의 결과를 모른 채 독립 평가.',
+      '가중치는 기업/주최자가 직접 설정.',
+    ],
+  },
+  {
+    id: 'expandableAuth',
+    icon: '🧩',
+    title: '확장 가능한 인증 조건',
+    description: [
+      'World ID 기반 인증 범위가 확장되면, WorldFit은 공고 목적에 따라',
+      '더 다양한 지원 자격 조건을 설정.',
+    ],
+  },
+] as const;
+
+const landingWorldIdDetailIntroParagraphs = [
+  'WorldFit은 World ID를 활용해 지원자의 실재성을 검증하고, 기업이 신뢰 가능한 지원자 풀을 확보할 수 있도록 지원합니다. 기존 온라인 채용 환경에서는 이메일, 전화번호, 소셜 로그인 등 식별 가능한 계정 정보만으로 지원자를 구분하는 방식이 일반적입니다. 그러나 이러한 방식은 다중 계정 생성, 자동화된 봇 지원, 허위 정보 기반 지원과 같은 부정 행위를 근본적으로 차단하기 어렵습니다. 특히 참여 자격과 보상이 연동된 공고에서는 지원자의 실재성, 단일성, 검토 가치를 사전에 확인하는 절차가 운영의 신뢰성을 결정짓습니다. 지원 규모가 커질수록 기업의 검토 부담은 가중되며, 부적격 지원자 및 중복 지원자를 선별하는 과정에서 상당한 리소스가 소모됩니다.',
+  'WorldFit은 지원 단계에 World ID 기반 인증을 도입하여 이러한 구조적 한계를 해소합니다. 지원자는 공고 지원 이전 World ID 인증을 완료해야 하며, 인증을 통과한 사용자만 후속 절차로 진입할 수 있습니다. 이를 통해 기업은 단순히 계정을 보유한 사용자가 아닌, 실재성이 검증된 지원자만을 대상으로 선발 프로세스를 운영하게 됩니다. 본 인증 구조는 신분증, 얼굴 이미지, 생년월일과 같은 민감 정보를 기업이 직접 수집하지 않고도 지원자 신뢰도를 확보할 수 있도록 설계되었습니다. WorldFit은 지원자의 모든 개인정보를 검증하는 서비스가 아닌, 지원자의 실재성과 단일성을 검증하여 부정 지원 가능성을 최소화하는 서비스입니다.',
+] as const;
+
+const landingWorldIdDetailColumns = [
+  {
+    title: '실제 인간 인증',
+    paragraphs: [
+      'WorldFit의 가장 기본적인 인증 조건은 지원자가 실제 사람인지를 확인하는 것입니다. 온라인 지원 환경에서는 하나의 사용자가 여러 계정을 만들어 반복 지원하거나, 자동화된 봇이 공고에 접근하는 문제가 발생할 수 있습니다. 특히 참여 자격과 보상이 연결되는 공고에서는 이러한 문제를 사전에 줄이는 것이 중요합니다.',
+      'WorldFit은 World ID 기반 인증을 통해 지원자가 봇이나 가짜 계정이 아닌 실제 사람인지 확인합니다. 기업은 단순히 이메일, 전화번호, 소셜 로그인만으로 지원자를 구분하는 것이 아니라, 실제 인간임이 검증된 사용자를 대상으로 선발 과정을 운영할 수 있습니다. 이를 통해 허위 지원, 중복 지원, 자동화된 무분별한 지원을 줄이고, 공고에 참여하는 지원자의 신뢰도를 높일 수 있습니다. 지원자 입장에서도 복잡한 절차 없이 본인이 실제 사람이라는 점만 인증하면 되기 때문에, 불필요한 서류 제출이나 반복적인 본인 확인 과정을 줄일 수 있습니다.',
+      'WorldFit은 인증을 통해 지원자의 신뢰성을 확보하되, 지원자가 과도한 개인정보를 제출하지 않도록 설계됩니다.',
+    ],
+  },
+  {
+    title: '중복 지원 방지',
+    paragraphs: [
+      'WorldFit은 World ID 기반 인증을 통해 한 사람이 여러 계정으로 반복 지원하는 문제를 줄이는 데 도움을 줍니다. 특히 보상이나 선발 결과가 연결된 공고에서는 동일인이 여러 계정으로 참여하는 문제가 공정성을 해칠 수 있습니다.',
+      'WorldFit은 지원자가 하나의 검증된 신원을 기반으로 지원하도록 설계됩니다. 이를 통해 기업은 동일인이 여러 계정으로 지원했을 가능성을 낮출 수 있고, 지원자 간 기회를 더 공정하게 배분할 수 있습니다. 단순히 지원자 수를 많이 받는 것보다, 실제로 검토할 가치가 있는 신뢰도 높은 지원자 풀을 만드는 데 집중할 수 있습니다.',
+      '이 기능은 채용뿐 아니라 해커톤, 장학 프로그램, 공모전, 리워드형 캠페인에도 활용될 수 있습니다. WorldFit은 World ID 기반 인증을 통해 중복 참여 가능성을 줄이고 더 공정한 참여 환경을 만들 수 있습니다.',
+    ],
+  },
+  {
+    title: '개인정보 수집 최소화',
+    paragraphs: [
+      '기존의 지원 과정에서는 연령, 국적, 거주지, 신분증, 증명 서류 등 민감한 개인정보를 직접 제출해야 하는 경우가 많습니다. 하지만 기업이 실제로 필요한 것은 지원자의 전체 개인정보가 아니라, 특정 조건을 충족하는지에 대한 확인 결과일 때가 많습니다.',
+      'WorldFit은 이러한 문제를 해결하기 위해 개인정보 최소화 방향으로 인증 구조를 설계합니다. 지원자는 이름, 생년월일, 신분증 이미지, 상세 주소 등 민감한 정보를 기업에 직접 제출하지 않고도 필요한 자격 조건을 인증할 수 있습니다. 기업은 지원자의 전체 개인정보를 확인하는 것이 아니라, 공고에 필요한 조건을 충족했는지에 대한 결과만 확인합니다.',
+      '이 방식은 지원자에게는 개인정보 노출 부담을 줄여주고, 기업에게는 개인정보 관리 리스크를 낮춰줍니다. 기업이 불필요하게 민감한 정보를 많이 수집할수록 보관, 관리, 유출 방지에 대한 책임도 커집니다.',
+      'WorldFit은 지원 과정에서 필요한 정보만 확인하도록 설계함으로써, 기업이 더 안전하고 간결한 지원 프로세스를 운영할 수 있도록 돕습니다.',
+    ],
+  },
+] as const;
+
+const landingWorldIdDetailClosing =
+  'WorldFit의 World ID 기반 지원자 인증은 단순한 로그인 기능이 아닙니다. 지원자가 실제 사람인지 확인하고, 중복·봇 지원 가능성을 줄이며, 기업과 지원자 모두의 개인정보 부담을 낮추는 신뢰 기반 지원 구조입니다. 기업은 더 검증된 지원자를 대상으로 선발 과정을 운영할 수 있고, 지원자는 과도한 개인정보 제출 없이 공정한 지원 절차에 참여할 수 있습니다. WorldFit은 이를 통해 온라인 지원 과정에서 발생하는 신뢰 문제를 줄이고, 더 투명하고 효율적인 선발 환경을 만드는 것을 목표로 합니다.';
+
+const landingMultiAgentDetailIntroParagraphs = [
+  'WorldFit은 지원자의 제출 자료를 하나의 평가자가 주관적으로 검토하는 방식이 아니라, 여러 AI 에이전트가 각기 다른 기준으로 독립 평가한 뒤 종합 의견을 도출하는 구조를 사용합니다. 기존 채용과 선발 과정에서는 평가자의 주관, 내부 관계, 기준 불일치, 검토 시간 부족으로 인해 공정성 문제가 발생할 수 있습니다. 특히 지원자가 많거나 제출 자료가 복잡한 경우, 모든 지원자를 동일한 깊이와 기준으로 검토하기 어렵고, 평가 근거가 명확하게 남지 않아 선발 과정의 투명성을 설명하기 어려운 문제가 있습니다.',
+  'WorldFit은 이러한 문제를 줄이기 위해 평가 기준과 가중치를 사전에 설정하고, AI 에이전트가 지원자의 제출 자료를 항목별로 분석하도록 합니다. AI는 최종 합격과 불합격을 결정하는 주체가 아니라, 기업이 더 일관된 기준으로 지원자를 검토할 수 있도록 돕는 평가 보조 시스템입니다. 이를 통해 기업은 평가자의 개인적 선호나 임의적 판단에만 의존하지 않고, 지원자의 실제 제출 자료와 평가 기준에 기반한 설명 가능한 리포트를 확인할 수 있습니다. 최종 판단은 기업이 내리되, WorldFit은 평가 과정에서 발생할 수 있는 편향과 불투명성을 줄이고, 선발 근거를 더 명확하게 남길 수 있도록 돕습니다.',
+] as const;
+
+const landingMultiAgentOverviewCards = [
+  {
+    title: '기존 평가 방식의 문제',
+    paragraphs: [
+      '기존 지원자 검토 과정에서는 평가 기준이 명확하지 않거나, 평가자마다 중요하게 보는 항목이 달라 결과의 일관성이 떨어질 수 있습니다. 어떤 평가자는 코드 구현 완성도를 가장 중요하게 볼 수 있고, 다른 평가자는 문서화나 커뮤니케이션 능력을 더 중요하게 볼 수 있습니다. 이처럼 기준이 다르면 같은 지원자에 대해서도 평가 결과가 달라질 수 있습니다.',
+      '또한 채용이나 선발 과정에서는 평가 근거가 충분히 기록되지 않는 경우가 많습니다. 정성적 판단이 강하게 작용하면, 실제 역량보다 관계나 인상에 의해 결과가 좌우될 가능성이 생깁니다. 이는 채용 비리, 내부자 우대, 불공정 선발과 같은 문제로 이어질 수 있습니다.',
+      'WorldFit은 이러한 문제를 줄이기 위해 기업이 사전에 평가 기준과 가중치를 설정하도록 합니다. 모든 지원자는 동일한 기준 아래에서 검토되며, 각 AI 에이전트는 자신의 역할에 맞는 항목만 집중적으로 평가합니다. 이 방식은 특정 평가자의 주관이나 내부 관계에 의존하는 평가가 아니라, 제출 자료와 사전 정의된 기준을 기반으로 지원자를 비교할 수 있게 합니다. 기업은 지원자를 더 빠르고 체계적으로 검토할 수 있고, 선발 과정에서 "왜 이 지원자가 높은 평가를 받았는지"를 설명할 수 있는 근거를 확보할 수 있습니다.',
+    ],
+  },
+  {
+    title: '평가 흐름',
+    paragraphs: [
+      'WorldFit의 멀티 AI 에이전트 평가는 크게 세 단계로 구성됩니다.',
+      '첫 번째 단계는 평가 기준 설정입니다. 기업은 공고를 생성할 때 선발 목적에 맞는 평가 항목과 가중치를 설정합니다. 평가 항목은 직무나 프로그램 성격에 따라 달라질 수 있으며, 역량, 문제 해결 과정, 커뮤니케이션 능력, 제출 자료의 완성도, 신뢰성 등 다양한 기준을 조합할 수 있습니다. 중요한 점은 모든 지원자가 동일한 기준과 비중에 따라 검토된다는 것입니다.',
+      '두 번째 단계는 에이전트별 독립 평가입니다. 각 AI 에이전트는 지원자가 제출한 자료를 서로 다른 관점에서 검토합니다. 한 에이전트는 지원자의 역량과 결과물의 완성도를 보고, 다른 에이전트는 문제를 이해하고 해결한 과정을 분석합니다. 또 다른 에이전트는 자료의 표현력과 전달력을 확인하고, 제출 내용의 일관성과 신뢰 가능성을 검토합니다. 이처럼 평가 관점을 나누면 하나의 기준으로만 판단할 때 놓칠 수 있는 부분을 보완할 수 있습니다.',
+      '세 번째 단계는 종합 의견 도출입니다. WorldFit은 각 에이전트의 평가 결과를 단순히 점수로만 보여주지 않습니다. 공통적으로 긍정 평가된 부분, 반복적으로 지적된 보완점, 추가 확인이 필요한 부분을 함께 정리합니다. 기업은 최종 점수뿐 아니라 지원자의 강점, 리스크, 후속 질문까지 확인할 수 있습니다.',
+      '이 구조는 AI가 사람을 대신해 최종 결정을 내리는 방식이 아닙니다. 오히려 기업이 더 책임 있는 판단을 내릴 수 있도록 평가 근거를 정리하고, 지원자 간 비교 기준을 일관되게 유지하도록 돕는 방식입니다. WorldFit은 선발 과정의 효율성을 높이는 동시에, 평가 기준과 판단 근거를 더 투명하게 남길 수 있도록 설계되었습니다.',
+    ],
+  },
+] as const;
+
+const landingMultiAgentAgents = [
+  {
+    step: 1,
+    name: 'Reason Agent',
+    description:
+      'Reason Agent는 지원자가 문제를 어떻게 이해하고 해결했는지를 평가합니다. 단순히 결과물이 잘 만들어졌는지가 아니라, 어떤 문제를 어떤 기준으로 판단했고, 왜 그런 설계를 선택했는지를 분석합니다. 같은 요구사항이라도 어떤 사람은 빠른 구현을 우선할 수 있고, 어떤 사람은 확장성과 안정성을 우선할 수 있습니다. Reason Agent는 지원자가 선택한 방식이 과제의 목적과 잘 맞는지, 의사결정 과정이 논리적인지 확인합니다. Reason Agent가 확인하는 주요 항목은 다음과 같습니다.',
+    items: [
+      '문제 이해도',
+      '문제를 구조화하는 능력',
+      '요구사항 분석 능력',
+      '개선 방향 제시 능력',
+      '의사결정의 논리성',
+      '기술 선택의 근거',
+      '트레이드오프 설명 능력',
+      '복잡한 문제를 구조화하는 능력',
+    ],
+  },
+  {
+    step: 2,
+    name: 'Tech Agent',
+    description:
+      'Tech Agent는 지원자의 기술 구현력을 평가합니다. 제출된 GitHub Repository, README, API 구조, 프로젝트 폴더 구조, 테스트 코드, 데모 영상 등을 기반으로 코드 품질과 구현 완성도를 확인합니다. 이 에이전트는 코드가 단순히 동작하는지뿐만 아니라, 기능별 책임이 잘 분리되어 있는지, 아키텍처가 확장 가능한지, 예외 처리가 충분한지, 테스트나 검증 방식이 포함되어 있는지를 함께 평가합니다. Tech Agent가 확인하는 주요 항목은 다음과 같습니다.',
+    items: [
+      '코드 가독성',
+      '테스트 코드 또는 검증 방식',
+      '함수와 모듈의 책임 분리',
+      '배포 가능성',
+      '아키텍처 설계',
+      '유지보수성과 확장성',
+      '핵심 기능 구현 완성도',
+      '예외 처리',
+    ],
+  },
+  {
+    step: 3,
+    name: 'Comm Agent',
+    description:
+      'Comm Agent는 지원자의 커뮤니케이션 능력과 문서화 수준을 평가합니다. 개발자 평가에서 커뮤니케이션은 단순히 말을 잘하는 능력이 아니라, 자신의 결과물을 다른 사람이 이해할 수 있도록 설명하는 능력을 의미합니다. 실제 협업 환경에서는 코드만 잘 작성하는 것만큼이나, 왜 그렇게 구현했는지, 어떻게 실행해야 하는지, 어떤 구조로 되어 있는지를 명확하게 전달하는 것이 중요합니다. Comm Agent는 README, 주석, API 문서, 제출 설명, 데모 영상 등을 기반으로 지원자가 자신의 작업을 얼마나 잘 설명했는지 평가합니다. Comm Agent가 확인하는 주요 항목은 다음과 같습니다.',
+    items: [
+      'README 완성도',
+      '설계 의사결정 설명',
+      '실행 방법 설명',
+      '문장 명확성',
+      '프로젝트 구조 설명',
+      '협업자가 이해하기 쉬운 문서화',
+      'API 또는 기능 설명',
+      '데모 영상의 전달력',
+    ],
+  },
+  {
+    step: 4,
+    name: 'Creat Agent',
+    description:
+      'Creat Agent는 지원자의 창의성과 접근 방식의 차별성을 평가합니다. 모든 과제에서 창의성이 가장 중요한 것은 아니지만, 같은 요구사항을 해결하더라도 더 나은 사용자 경험, 더 효율적인 구조, 더 확장 가능한 아이디어를 제시한 지원자는 긍정적으로 평가될 수 있습니다. Creat Agent는 지원자가 단순히 요구사항만 구현했는지, 아니면 문제를 더 넓게 보고 추가적인 개선 가능성까지 고려했는지 확인합니다. 다만 Creat Agent는 단순히 특이한 기능을 많이 넣었다고 높은 점수를 주지 않습니다. 창의적인 아이디어가 실제 문제 해결과 연결되어 있는지, 과제의 목적을 해치지 않는지, 구현 가능성이 있는지를 함께 봅니다. Creat Agent가 확인하는 주요 항목은 다음과 같습니다.',
+    items: [
+      '문제 접근 방식의 차별성',
+      '아이디어의 실현 가능성',
+      '추가 기능의 의미',
+      '기존 요구사항을 넘어선 개선 제안',
+      '사용자 확장 가능성',
+      '과제 목적과의 적합성',
+      '사용자 경험 개선 요소',
+    ],
+  },
+  {
+    step: 5,
+    name: 'Intergrity Agent',
+    description:
+      'Integrity Agent는 지원자의 제출물이 신뢰할 수 있는지, 과제 수행 태도가 성실한지, 제출 자료 간 일관성이 있는지를 평가합니다. 이 에이전트는 기술적 완성도뿐만 아니라 제출 과정에서 나타나는 신뢰도를 확인합니다. 또한 팀 프로젝트를 제출했는데 본인의 기여 범위가 명확하지 않다면 추가 검증이 필요합니다. Integrity Agent는 지원자를 의심하기 위한 에이전트가 아니라, 기업이 추가로 확인해야 할 리스크를 정리해주는 역할을 합니다. 이를 통해 기업은 면접이나 후속 검토 단계에서 어떤 부분을 확인해야 하는지 알 수 있습니다. Integrity Agent가 확인하는 주요 항목은 다음과 같습니다.',
+    items: [
+      '제출 자료 간 일관성',
+      '데모 영상과 제출 코드의 일치 여부',
+      '본인 기여 범위 일관성',
+      '제출물의 완성도',
+      '과제 요구 사항 준수 여부',
+      '추가 검증이 필요한 리스크',
+      'README와 실제 코드의 일치 여부',
+    ],
+  },
+] as const;
+
+const landingExpandableAuthDetailIntroParagraphs = [
+  'WorldFit은 현재 World ID를 기반으로 지원자의 실재성 검증에 초점을 두고 있습니다. 향후 World ID 기반 인증 범위가 확장됨에 따라, 공고 목적에 부합하는 다양한 자격 조건을 설정할 수 있는 구조로 진화할 예정입니다.',
+  '본 기능의 핵심은 지원자의 세부 개인정보를 기업에 직접 공개하지 않는다는 점에 있습니다. WorldFit은 더 많은 개인정보를 수집하는 방향이 아닌, 공고에 필요한 조건의 충족 여부만을 확인하는 방향을 지향합니다. 기업은 공고 운영에 필요한 조건만을 설정하고, 지원자는 민감한 원본 정보를 제출하지 않고도 자격 충족 여부를 인증할 수 있습니다. 연령 제한 공고, 특정 국가·지역 기반 프로그램, 조건부 캠페인 등은 자격 검증 절차를 필수적으로 수반합니다. 기존 절차에서는 기업이 신분증, 증빙 서류 등을 직접 검토해야 했으나, WorldFit의 확장 구조에서는 해당 과정을 조건 충족 여부 중심의 인증 절차로 대체할 수 있습니다.',
+  '본 페이지는 현재 적용 중인 기능이 아닌, World ID 인증 범위 확장 시 WorldFit이 공고별 자격 조건을 어떻게 설계할 수 있는지를 제시하는 확장 로드맵입니다.',
+] as const;
+
+const landingExpandableAuthDetailCards = [
+  {
+    title: '연령 조건',
+    paragraphs: [
+      '향후 연령 기반 인증이 도입될 경우, WorldFit은 성인 한정 공고 또는 특정 연령 조건이 요구되는 모집 절차에 활용될 수 있습니다.',
+      '기존 방식은 기업이 지원자의 생년월일, 신분증 사본, 추가 증빙을 직접 확인하는 구조로, 지원자에게는 개인정보 제출 부담을, 기업에게는 보관 및 관리 책임을 발생시킵니다.',
+      'WorldFit의 확장 구조에서는 기업이 조건을 설정하고, 지원자는 해당 조건의 충족 여부만을 인증받습니다. 기업은 정확한 생년월일을 확인할 필요가 없으며, 지원자 또한 민감 정보를 직접 제출하지 않아도 됩니다.',
+    ],
+  },
+  {
+    title: '국가 및 지역 조건',
+    paragraphs: [
+      '향후 국가 또는 지역 기반 인증이 도입될 경우, WorldFit은 특정 국가·지역을 대상으로 하는 공고에서 지원 가능 범위를 정의할 수 있습니다. 기존 방식에서는 국적, 거주지, 주소, 신분증, 재학·재직 증명 등의 직접 확인이 요구되며, 이는 지원자의 부담과 기업의 서류 검토·개인정보 관리 비용을 동시에 증가시킵니다.',
+      'WorldFit은 국가 및 지역 조건을 조건 충족 여부 중심의 검증 구조로 운영하는 방향을 지향합니다. 기업은 조건을 설정하고, 지원자는 해당 조건의 충족 여부만을 인증받습니다.',
+      '다만 채용 및 선발 과정에서 국가, 지역, 국적 조건은 법적·윤리적 쟁점을 야기할 수 있으므로, 본 기능은 공정성, 서비스 정책, 관련 법령을 종합적으로 검토한 후 제한적으로 적용되어야 합니다.',
+    ],
+  },
+  {
+    title: '선택적 자격 조건',
+    paragraphs: [
+      'WorldFit은 World ID 기반 인증 범위 확장에 따라, 공고 성격에 부합하는 자격 조건을 선택적으로 적용할 수 있는 구조를 지향합니다. 모든 공고가 동일한 인증 수준을 요구하지는 않습니다. 일부 공고는 실재성 검증만으로 충분하며, 일부는 연령 또는 국가 조건까지 요구될 수 있습니다. 선택적 자격 조건의 핵심은 기업이 모든 정보를 요구하는 방식이 아닌, 공고 운영에 필요한 최소 조건만을 설정하는 방식으로 운영된다는 점입니다.',
+      '이 과정에서 WorldFit은 지원자의 민감 정보 원본을 기업에 공개하지 않으며, 조건 충족 여부 자체를 중심으로 인증 결과를 제공합니다. 기업은 공고 목적에 부합하는 조건을 설정하고, 지원자는 불필요한 개인정보 제출 없이 자격을 입증할 수 있습니다.',
+      '단, 성별·국적·지역 등 민감하게 해석될 수 있는 조건은 채용 및 선발 과정에서 차별 이슈로 이어질 가능성이 있습니다. 따라서 해당 조건은 단순 필터링 수단이 아닌, 법적 기준과 공고 목적이 명확히 정의된 경우에 한해 제한적으로 적용되어야 합니다.',
+    ],
+  },
+  {
+    title: '공고별 맞춤 인증 설계',
+    paragraphs: [
+      'WorldFit은 모든 공고에 동일한 인증 조건을 일괄 적용하는 방식이 아닌, 공고 목적에 따라 인증 조건을 차등 설정할 수 있는 구조를 지향합니다. 채용 공고, 해커톤, 공모전, 리워드 캠페인, 베타 테스트는 각각 요구되는 인증 수준이 상이합니다.',
+      '해커톤에서는 실재성 검증과 중복 지원 방지가 핵심이며, 채용 과제에서는 실재성 검증과 제출 자료 검토가 중심이 됩니다. 국가별 베타 테스트는 실재성 검증과 국가 조건을, 성인 대상 프로그램은 연령 조건을 추가로 요구합니다.',
+      'WorldFit은 이러한 차이를 반영하여 기업이 필요한 인증 조건만을 선택하고, 지원자는 해당 조건의 충족 여부만을 인증받는 구조를 제공합니다. 이는 지원 절차에서 과도한 정보를 요구하지 않으면서, 공고 목적에 부합하는 수준의 신뢰를 확보하는 접근입니다.',
     ],
   },
 ] as const;
@@ -1473,6 +1697,10 @@ function App() {
     useState<CompanyCreateAgentDetailTab>('criteria');
   const [openCompanyCreateSubmissionDropdownId, setOpenCompanyCreateSubmissionDropdownId] = useState<number | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [activeLegalDocument, setActiveLegalDocument] = useState<LegalDocumentKey | null>(null);
+  const [cookieConsent, setCookieConsent] = useState<CookieConsent | null>(() =>
+    getInitialCookieConsent(),
+  );
   const [selectedRole, setSelectedRole] = useState<Role>('candidate');
   const [modalStep, setModalStep] = useState<ModalStep>('role');
   const [candidateForm, setCandidateForm] =
@@ -1563,14 +1791,24 @@ function App() {
 
   useEffect(() => {
     document.body.style.overflow =
-      isModalOpen || companyLoginOpen || selectedCompanyCreateAgentId || isCompanyBlindRankingNotifyModalOpen
+      isModalOpen ||
+      companyLoginOpen ||
+      selectedCompanyCreateAgentId ||
+      isCompanyBlindRankingNotifyModalOpen ||
+      activeLegalDocument
         ? 'hidden'
         : '';
 
     return () => {
       document.body.style.overflow = '';
     };
-  }, [companyLoginOpen, isCompanyBlindRankingNotifyModalOpen, isModalOpen, selectedCompanyCreateAgentId]);
+  }, [
+    activeLegalDocument,
+    companyLoginOpen,
+    isCompanyBlindRankingNotifyModalOpen,
+    isModalOpen,
+    selectedCompanyCreateAgentId,
+  ]);
 
   useEffect(() => {
     const isCompanyDashboardScreen = screen === 'companyTemp' && Boolean(authCompanyUser);
@@ -2344,7 +2582,7 @@ function App() {
     }
 
     if (!candidateForm.termsAgreed) {
-      nextErrors.termsAgreed = '이용약관 및 개인정보처리방침 동의가 필요합니다.';
+      nextErrors.termsAgreed = '이용약관 및 개인정보 수집·이용 동의가 필요합니다.';
     }
 
     if (!candidateVerificationConfirmed) {
@@ -2889,7 +3127,7 @@ function App() {
     }
 
     if (!companyForm.termsAgreed) {
-      nextErrors.termsAgreed = '이용약관 동의가 필요합니다.';
+      nextErrors.termsAgreed = '이용약관 및 개인정보 수집·이용 동의가 필요합니다.';
     }
 
     if (!verificationConfirmed) {
@@ -3085,6 +3323,84 @@ function App() {
     setCompanyUnlockSecondsLeft(0);
     setCompanyUnlockCodeExpiresSecondsLeft(0);
   };
+
+  const openLoginFlowForRole = (role: Role) => {
+    setCompanyLoginOpen(true);
+    setCompanyLoginStep('form');
+    setLoginRole(role);
+    setCompanyLoginForm(initialCompanyLoginForm);
+    setCandidateLoginForm(initialCandidateLoginForm);
+    setCandidateLoginMethod('worldId');
+    setCompanyLoginError(null);
+    setCompanyLoginNotice(null);
+    setCandidateLoginError(null);
+    setCandidateLoginNotice(null);
+    setCandidateLoginSent(false);
+    setCandidateLoginSecondsLeft(0);
+    setCandidateLoginCodeExpiresSecondsLeft(0);
+    setCandidateLoginWorldIdOpen(false);
+    setCandidateLoginWorldIdRequest(null);
+    setCandidateLoginWorldIdError(null);
+    setIsCompanyAccountLocked(false);
+    setCompanyUnlockCode('');
+    setCompanyUnlockSent(false);
+    setCompanyUnlockSecondsLeft(0);
+    setCompanyUnlockCodeExpiresSecondsLeft(0);
+  };
+
+  const handleLandingCompanyEntry = () => {
+    if (authCompanyUser) {
+      setCompanyDashboardView('home');
+      setScreen('companyTemp');
+      return;
+    }
+
+    openLoginFlowForRole('organizer');
+  };
+
+  const handleLandingCandidateEntry = () => {
+    if (authCandidateUser) {
+      setScreen('candidateTemp');
+      return;
+    }
+
+    openLoginFlowForRole('candidate');
+  };
+
+  const handleCookieConsent = (nextConsent: CookieConsent) => {
+    setCookieConsent(nextConsent);
+    window.localStorage.setItem(landingCookieConsentStorageKey, nextConsent);
+  };
+
+  const openLandingWorldIdDetail = () => {
+    setScreen('landingWorldIdDetail');
+    setIsModalOpen(false);
+  };
+
+  const openLandingMultiAgentDetail = () => {
+    setScreen('landingMultiAgentDetail');
+    setIsModalOpen(false);
+  };
+
+  const openLandingExpandableAuthDetail = () => {
+    setScreen('landingExpandableAuthDetail');
+    setIsModalOpen(false);
+  };
+
+  const openLegalDocument = (documentKey: LegalDocumentKey) => {
+    setActiveLegalDocument(documentKey);
+  };
+
+  const closeLegalDocument = () => {
+    setActiveLegalDocument(null);
+  };
+
+  const handleLegalDocumentLinkClick =
+    (documentKey: LegalDocumentKey) => (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLegalDocument(documentKey);
+    };
 
   const closeCompanyLogin = () => {
     setCompanyLoginOpen(false);
@@ -4378,6 +4694,89 @@ function App() {
           />
         ) : null}
       </>
+    );
+  };
+
+  const renderFooterNavigation = () => (
+    <nav aria-label="Footer links">
+      <button type="button" className="footer__link" onClick={() => openLegalDocument('terms')}>
+        {legalDocumentCatalog.terms.footerLabel}
+      </button>
+      <button type="button" className="footer__link" onClick={() => openLegalDocument('consent')}>
+        {legalDocumentCatalog.consent.footerLabel}
+      </button>
+      <a className="footer__link" href="/">
+        고객지원
+      </a>
+    </nav>
+  );
+
+  const renderLegalDocumentAgreement = (suffix: string) => (
+    <>
+      <button
+        type="button"
+        className="legal-inline-link"
+        onClick={handleLegalDocumentLinkClick('terms')}
+      >
+        이용약관
+      </button>
+      <span> 및 </span>
+      <button
+        type="button"
+        className="legal-inline-link"
+        onClick={handleLegalDocumentLinkClick('consent')}
+      >
+        개인정보 수집·이용 동의서
+      </button>
+      <span>{suffix}</span>
+    </>
+  );
+
+  const renderLegalDocumentLayer = () => {
+    if (!activeLegalDocument) {
+      return null;
+    }
+
+    const documentMeta = legalDocumentCatalog[activeLegalDocument];
+
+    return (
+      <div className="legal-document-layer" role="presentation">
+        <button
+          type="button"
+          className="legal-document-layer__backdrop"
+          aria-label="문서 보기 닫기"
+          onClick={closeLegalDocument}
+        />
+
+        <section
+          className="legal-document-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="legal-document-title"
+        >
+          <div className="legal-document-modal__header">
+            <div className="legal-document-modal__title-group">
+              <h2 id="legal-document-title">{documentMeta.title}</h2>
+              <p>{documentMeta.src} 파일을 수정하면 이 화면에 바로 반영됩니다.</p>
+            </div>
+
+            <button
+              type="button"
+              className="legal-document-modal__close"
+              aria-label="닫기"
+              onClick={closeLegalDocument}
+            >
+              ×
+            </button>
+          </div>
+
+          <iframe
+            className="legal-document-modal__frame"
+            src={documentMeta.src}
+            title={documentMeta.title}
+          />
+        </section>
+      </div>
     );
   };
 
@@ -7668,7 +8067,9 @@ function App() {
                     checked={candidateForm.termsAgreed}
                     onChange={handleCandidateChange}
                   />
-                  <span>이용약관 및 개인정보 수집·이용에 동의합니다.</span>
+                  <span className="company-check__text">
+                    {renderLegalDocumentAgreement('에 동의합니다.')}
+                  </span>
                 </label>
                 {candidateErrors.termsAgreed ? (
                   <span className="company-field__error company-field__error--inline">
@@ -7751,6 +8152,7 @@ function App() {
         ) : null}
 
         {renderLoginLayer()}
+        {renderLegalDocumentLayer()}
       </div>
     );
   }
@@ -7926,7 +8328,9 @@ function App() {
                     checked={companyForm.termsAgreed}
                     onChange={handleCompanyChange}
                   />
-                  <span>이용약관 및 개인정보 수집·이용에 동의합니다.</span>
+                  <span className="company-check__text">
+                    {renderLegalDocumentAgreement('에 동의합니다.')}
+                  </span>
                 </label>
                 {companyErrors.termsAgreed ? (
                   <span className="company-field__error company-field__error--inline">
@@ -7955,6 +8359,258 @@ function App() {
         </section>
 
         {renderLoginLayer()}
+        {renderLegalDocumentLayer()}
+      </div>
+    );
+  }
+
+  if (screen === 'landingWorldIdDetail') {
+    return (
+      <div className="page-shell">
+        <main className="landing-detail-page" aria-hidden={isModalOpen}>
+          <header className="topbar">
+            <WorldLogo />
+
+            <div className="topbar__actions">
+              <button
+                type="button"
+                className="ghost-button ghost-button--small"
+                onClick={openLoginFlow}
+              >
+                로그인
+              </button>
+              <button
+                type="button"
+                className="solid-button solid-button--small"
+                onClick={openSignupFlow}
+              >
+                회원가입
+              </button>
+            </div>
+          </header>
+
+          <div className="topbar-divider" />
+
+          <section className="landing-detail">
+            <button
+              type="button"
+              className="landing-detail__back"
+              onClick={() => setScreen('landing')}
+              aria-label="랜딩 페이지로 돌아가기"
+            >
+              <span aria-hidden="true">←</span>
+            </button>
+
+            <h1>World ID 기반 지원자 인증</h1>
+
+            <div className="landing-detail__intro">
+              {landingWorldIdDetailIntroParagraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+
+            <div className="landing-detail__grid">
+              {landingWorldIdDetailColumns.map((column) => (
+                <article className="landing-detail-card" key={column.title}>
+                  <h2>{column.title}</h2>
+
+                  <div className="landing-detail-card__body">
+                    {column.paragraphs.map((paragraph) => (
+                      <p key={paragraph}>{paragraph}</p>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+
+            <p className="landing-detail__closing">{landingWorldIdDetailClosing}</p>
+          </section>
+
+          <footer className="footer footer--detail">
+            <p>© 2026 WorldFit · Built on World ID</p>
+            {renderFooterNavigation()}
+          </footer>
+        </main>
+
+        {renderLoginLayer()}
+        {renderLegalDocumentLayer()}
+      </div>
+    );
+  }
+
+  if (screen === 'landingMultiAgentDetail') {
+    return (
+      <div className="page-shell">
+        <main className="landing-detail-page" aria-hidden={isModalOpen}>
+          <header className="topbar">
+            <WorldLogo />
+
+            <div className="topbar__actions">
+              <button
+                type="button"
+                className="ghost-button ghost-button--small"
+                onClick={openLoginFlow}
+              >
+                로그인
+              </button>
+              <button
+                type="button"
+                className="solid-button solid-button--small"
+                onClick={openSignupFlow}
+              >
+                회원가입
+              </button>
+            </div>
+          </header>
+
+          <div className="topbar-divider" />
+
+          <section className="landing-detail landing-detail--multi-agent">
+            <button
+              type="button"
+              className="landing-detail__back"
+              onClick={() => setScreen('landing')}
+              aria-label="랜딩 페이지로 돌아가기"
+            >
+              <span aria-hidden="true">←</span>
+            </button>
+
+            <h1>멀티 AI 에이전트 평가</h1>
+
+            <div className="landing-detail__intro">
+              {landingMultiAgentDetailIntroParagraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+
+            <div className="landing-multi-agent__overview">
+              {landingMultiAgentOverviewCards.map((card) => (
+                <article className="landing-multi-agent__overview-card" key={card.title}>
+                  <h2>{card.title}</h2>
+
+                  <div className="landing-multi-agent__overview-body">
+                    {card.paragraphs.map((paragraph) => (
+                      <p key={paragraph}>{paragraph}</p>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+
+            <section className="landing-multi-agent__agents">
+              <div className="landing-multi-agent__agents-intro">
+                <h2>에이전트 구성</h2>
+                <p>
+                  WorldFit의 AI 에이전트는 평가 항목에 따라 역할이 나뉩니다. 각 에이전트는 서로 다른 기준으로
+                  지원자의 제출 자료를 분석하며, 모든 결과는 최종 종합 평가에 반영됩니다.
+                </p>
+              </div>
+
+              <div className="landing-multi-agent__agent-list">
+                {landingMultiAgentAgents.map((agent) => (
+                  <article className="landing-agent-card" key={agent.name}>
+                    <div className="landing-agent-card__badge" aria-hidden="true">
+                      {agent.step}
+                    </div>
+
+                    <div className="landing-agent-card__content">
+                      <h3>{agent.name}</h3>
+                      <p>{agent.description}</p>
+
+                      <div className="landing-agent-card__criteria">
+                        {agent.items.map((item) => (
+                          <div className="landing-agent-card__criterion" key={item}>
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </section>
+
+          <footer className="footer footer--detail">
+            <p>© 2026 WorldFit · Built on World ID</p>
+            {renderFooterNavigation()}
+          </footer>
+        </main>
+
+        {renderLoginLayer()}
+        {renderLegalDocumentLayer()}
+      </div>
+    );
+  }
+
+  if (screen === 'landingExpandableAuthDetail') {
+    return (
+      <div className="page-shell">
+        <main className="landing-detail-page" aria-hidden={isModalOpen}>
+          <header className="topbar">
+            <WorldLogo />
+
+            <div className="topbar__actions">
+              <button
+                type="button"
+                className="ghost-button ghost-button--small"
+                onClick={openLoginFlow}
+              >
+                로그인
+              </button>
+              <button
+                type="button"
+                className="solid-button solid-button--small"
+                onClick={openSignupFlow}
+              >
+                회원가입
+              </button>
+            </div>
+          </header>
+
+          <div className="topbar-divider" />
+
+          <section className="landing-detail landing-detail--expandable-auth">
+            <button
+              type="button"
+              className="landing-detail__back"
+              onClick={() => setScreen('landing')}
+              aria-label="랜딩 페이지로 돌아가기"
+            >
+              <span aria-hidden="true">←</span>
+            </button>
+
+            <h1>확장 가능한 World ID 인증 조건</h1>
+
+            <div className="landing-detail__intro">
+              {landingExpandableAuthDetailIntroParagraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+
+            <div className="landing-expandable-auth__grid">
+              {landingExpandableAuthDetailCards.map((card) => (
+                <article className="landing-expandable-auth__card" key={card.title}>
+                  <h2>{card.title}</h2>
+
+                  <div className="landing-expandable-auth__body">
+                    {card.paragraphs.map((paragraph) => (
+                      <p key={paragraph}>{paragraph}</p>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <footer className="footer footer--detail">
+            <p>© 2026 WorldFit · Built on World ID</p>
+            {renderFooterNavigation()}
+          </footer>
+        </main>
+
+        {renderLoginLayer()}
+        {renderLegalDocumentLayer()}
       </div>
     );
   }
@@ -7986,45 +8642,64 @@ function App() {
         <div className="topbar-divider" />
 
         <section className="hero">
-          <div className="hero__copy">
-            <h1>
-              <span>World ID 기반으로</span>
-              <span>검증된 인간을, 더 공정하게</span>
-            </h1>
-            <p>
-              <span>World ID 신원 인증과 멀티 에이전트 AI 평가를 결합해</span>
-              <span>모든 선발 과정의 공정성과 신뢰를 높입니다.</span>
-            </p>
+          <div className={`hero__layout${cookieConsent !== null ? ' hero__layout--single' : ''}`}>
+            <div className="hero__copy">
+              <h1>
+                <span>World ID 기반으로</span>
+                <span>검증된 인간을, 더 공정하게</span>
+              </h1>
+              <p>
+                <span>World ID 신원 인증과 멀티 에이전트 AI 평가를 결합해</span>
+                <span>모든 선발 과정의 공정성과 신뢰를 높입니다.</span>
+              </p>
 
-            <div className="hero__actions">
-              <button
-                type="button"
-                className="solid-button"
-                onClick={() => {
-                  if (authCompanyUser) {
-                    setCompanyDashboardView('home');
-                    setScreen('companyTemp');
-                    return;
-                  }
-
-                  if (authCandidateUser) {
-                    setScreen('candidateTemp');
-                    return;
-                  }
-
-                  openLoginFlow();
-                }}
-              >
-                {authCompanyUser || authCandidateUser ? '임시페이지로 이동' : '홈 대시보드'}
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={openSignupFlow}
-              >
-                시작하기
-              </button>
+              <div className="hero__actions">
+                <button
+                  type="button"
+                  className="solid-button"
+                  onClick={handleLandingCompanyEntry}
+                >
+                  기업 / 주최자 홈
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={handleLandingCandidateEntry}
+                >
+                  지원자(개인) 홈
+                </button>
+              </div>
             </div>
+
+            {cookieConsent === null ? (
+              <aside className="cookie-card" aria-label="쿠키 사용 안내">
+                <div className="cookie-card__copy">
+                  <h2>쿠키 사용 안내</h2>
+                  <p>
+                    WorldFit은 로그인 유지, 보안, 서비스 개선을 위해 쿠키를 사용합니다.
+                    필수 쿠키는 서비스 이용을 위해 항상 사용되며,
+                  </p>
+                  <p>분석 쿠키는 동의한 경우에만 사용됩니다.</p>
+                </div>
+
+                <div className="cookie-card__actions">
+                  <button
+                    type="button"
+                    className="cookie-button cookie-button--primary"
+                    onClick={() => handleCookieConsent('accepted')}
+                  >
+                    동의
+                  </button>
+                  <button
+                    type="button"
+                    className="cookie-button cookie-button--secondary"
+                    onClick={() => handleCookieConsent('rejected')}
+                  >
+                    거부
+                  </button>
+                </div>
+              </aside>
+            ) : null}
           </div>
         </section>
 
@@ -8050,7 +8725,15 @@ function App() {
                 <button
                   type="button"
                   className="feature-card__link"
-                  onClick={openSignupFlow}
+                  onClick={
+                    card.id === 'worldIdApplicant'
+                      ? openLandingWorldIdDetail
+                      : card.id === 'multiAgent'
+                        ? openLandingMultiAgentDetail
+                        : card.id === 'expandableAuth'
+                          ? openLandingExpandableAuthDetail
+                        : openSignupFlow
+                  }
                 >
                   자세히 보기 →
                 </button>
@@ -8060,16 +8743,13 @@ function App() {
         </section>
 
         <footer className="footer">
-          <p>© 2026 WorldFit · Built on World ID · WLD 결제</p>
-          <nav aria-label="Footer links">
-            <a href="/">이용약관</a>
-            <a href="/">개인정보처리방침</a>
-            <a href="/">고객지원</a>
-          </nav>
+          <p>© 2026 WorldFit · Built on World ID</p>
+          {renderFooterNavigation()}
         </footer>
       </main>
 
       {renderLoginLayer()}
+      {renderLegalDocumentLayer()}
 
       {isModalOpen ? (
         <div className="modal-layer" role="presentation">
@@ -8263,7 +8943,9 @@ function App() {
                         checked={candidateForm.termsAgreed}
                         onChange={handleCandidateChange}
                       />
-                      <span>이용약관 및 개인정보처리방침에 동의합니다. (필수)</span>
+                      <span className="company-check__text">
+                        {renderLegalDocumentAgreement('에 동의합니다. (필수)')}
+                      </span>
                     </label>
                     {candidateErrors.termsAgreed ? (
                       <span className="field__error">{candidateErrors.termsAgreed}</span>
