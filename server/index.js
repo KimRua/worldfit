@@ -64,6 +64,7 @@ const app = express();
 const port = Number(process.env.PORT ?? 4000);
 const isProduction = process.env.NODE_ENV === 'production';
 const trustProxySetting = process.env.TRUST_PROXY?.trim();
+const sessionCookieSecureSetting = process.env.SESSION_COOKIE_SECURE?.trim().toLowerCase() ?? 'auto';
 const verificationExpiryMinutes = Number(process.env.COMPANY_VERIFICATION_EXPIRES_MINUTES ?? 10);
 const maxFailedLoginAttempts = 10;
 const unlockResendCooldownSeconds = 60;
@@ -98,8 +99,16 @@ if (trustProxySetting) {
     'trust proxy',
     Number.isInteger(numericTrustProxySetting) ? numericTrustProxySetting : trustProxySetting,
   );
-} else if (isProduction) {
+} else {
   app.set('trust proxy', 1);
+}
+
+let sessionCookieSecure = 'auto';
+
+if (sessionCookieSecureSetting === 'true') {
+  sessionCookieSecure = true;
+} else if (sessionCookieSecureSetting === 'false') {
+  sessionCookieSecure = false;
 }
 
 app.use(
@@ -118,7 +127,7 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
-      secure: isProduction,
+      secure: sessionCookieSecure,
       maxAge: 1000 * 60 * 60 * 24,
     },
   }),
@@ -813,10 +822,17 @@ app.post('/api/auth/admin/login', async (req, res) => {
     clearCompanySessionUser(req);
     clearCandidateSessionUser(req);
     setAdminSessionUser(req, adminUser);
+    req.session.save((saveError) => {
+      if (saveError) {
+        console.error('Admin session save failed:', saveError);
+        res.status(500).json({ message: '관리자 로그인 세션 저장 중 오류가 발생했습니다.' });
+        return;
+      }
 
-    res.json({
-      message: '관리자 로그인되었습니다.',
-      adminUser,
+      res.json({
+        message: '관리자 로그인되었습니다.',
+        adminUser,
+      });
     });
   } catch (error) {
     console.error('Admin login failed:', error);
