@@ -84,6 +84,7 @@ export type CandidateReport = {
   typeLabel: string;
   weights: string[];
   submittedAt: string;
+  status: 'processing' | 'completed';
   statusLabel: string;
   overallScore: number;
   percentileLabel: string;
@@ -128,6 +129,7 @@ export type CandidateSettingsForm = {
   birthDate: string;
   email: string;
   phone: string;
+  language: string;
   education: string;
   affiliation: string;
   careerYears: string;

@@ -25,6 +25,8 @@ const exploreTypeLabels = {
   education: '교육',
 };
 
+const pendingCandidateEvaluationJobs = new Set();
+
 const matchingSeedRecords = [
   {
     id: 'match-oo-startup',
@@ -232,15 +234,15 @@ function normalizeSubmissionMethodLabel(method) {
     return '링크 제출';
   }
 
-  if (normalized.includes('텍스트')) {
-    return '텍스트 직접 입력';
-  }
-
   if (
     lowered.includes('pdf') ||
     lowered.startsWith('.')
   ) {
-    return 'PDF(텍스트 기반)';
+    return 'PDF';
+  }
+
+  if (normalized.includes('텍스트')) {
+    return '텍스트 직접 입력';
   }
 
   return normalized;
@@ -258,16 +260,15 @@ function sanitizeCandidateSessionProcesses(processes) {
 }
 
 function isLinkSubmissionMethod(method) {
-  return String(method ?? '').includes('링크');
+  return normalizeSubmissionMethodLabel(method) === '링크 제출';
 }
 
 function isTextSubmissionMethod(method) {
-  return String(method ?? '').includes('텍스트');
+  return normalizeSubmissionMethodLabel(method) === '텍스트 직접 입력';
 }
 
 function isFileSubmissionMethod(method) {
-  const normalized = String(method ?? '').trim().toLowerCase();
-  return normalized.includes('pdf') || normalized.startsWith('.');
+  return normalizeSubmissionMethodLabel(method) === 'PDF';
 }
 
 function isValidHttpUrl(value) {
@@ -498,6 +499,7 @@ async function getCandidateProfileRow(candidateUserId) {
   const [rows] = await pool.execute(
     `
       SELECT candidate_user_id, birth_date, phone, education_summary, current_affiliation,
+             language,
              years_experience, employment_type, resume_file_name, resume_file_size_label,
              cover_letter_file_name, cover_letter_file_size_label, share_defaults_payload,
              favorite_job_ids_payload,
@@ -631,6 +633,7 @@ function buildDefaultSettingsForm(candidateUser, profileRow) {
     birthDate: trimValue(profileRow?.birth_date ?? '', 16) || 'YYYY-MM-DD',
     email: trimValue(candidateUser.email, 255),
     phone: trimValue(profileRow?.phone ?? '', 32) || '010-1234-5678',
+    language: trimValue(profileRow?.language ?? '', 64),
     education: trimValue(profileRow?.education_summary ?? '', 255) || '○○대학교 컴퓨터공학 학사',
     affiliation: trimValue(profileRow?.current_affiliation ?? '', 255) || '○○컴퍼니 · 백엔드 엔지니어',
     careerYears: `${toNumber(profileRow?.years_experience, 3) || 3}년`,
@@ -782,6 +785,27 @@ function buildCandidateReportImprovements(evaluationPayload) {
     }));
 }
 
+function buildPendingCandidateReport(session, row) {
+  return {
+    id: `report-${row.job_id}`,
+    sessionId: row.job_id,
+    title: session.title,
+    organization: session.organization,
+    location: session.location,
+    mode: session.mode,
+    typeLabel: session.typeLabel,
+    weights: session.weights,
+    submittedAt: `제출 ${formatTimestamp(row.submitted_at ?? row.updated_at ?? row.created_at)}`,
+    status: 'processing',
+    statusLabel: '평가중',
+    overallScore: 0,
+    percentileLabel: '에이전트가 제출물을 분석하고 있습니다.',
+    agentScores: [],
+    strengths: [],
+    improvements: [],
+  };
+}
+
 function buildCandidateReports(candidateUserId, applicationRows, evaluationRows, exploreSessionMap) {
   const evaluationRowsByJobId = new Map();
 
@@ -814,7 +838,7 @@ function buildCandidateReports(candidateUserId, applicationRows, evaluationRows,
       const evaluationRow = sortedEvaluations.find((item) => item.anonymous_id === anonymousId);
 
       if (!evaluationRow) {
-        return null;
+        return buildPendingCandidateReport(session, row);
       }
 
       const rank = Math.max(1, sortedEvaluations.findIndex((item) => item.id === evaluationRow.id) + 1);
@@ -832,6 +856,7 @@ function buildCandidateReports(candidateUserId, applicationRows, evaluationRows,
         typeLabel: session.typeLabel,
         weights: session.weights,
         submittedAt: `제출 ${formatTimestamp(row.submitted_at ?? evaluationRow.created_at)}`,
+        status: 'completed',
         statusLabel: '평가 완료',
         overallScore: Number(toNumber(evaluationRow.overall_score, 0).toFixed(1)),
         percentileLabel: `상위 ${percentile}% · ${rank}/${totalCount}`,
@@ -1112,6 +1137,32 @@ function buildCandidateEvaluationSubmission(candidateUser, profileRow, jobRow, s
   };
 }
 
+function queueCandidateSubmissionEvaluation(companyUserId, jobId, submission) {
+  const candidateAnonymousId = trimValue(submission?.candidate?.anonymousId ?? '', 120);
+  const queueKey = `${companyUserId}:${jobId}:${candidateAnonymousId}`;
+
+  if (!candidateAnonymousId || pendingCandidateEvaluationJobs.has(queueKey)) {
+    return;
+  }
+
+  pendingCandidateEvaluationJobs.add(queueKey);
+
+  setTimeout(() => {
+    void evaluateCandidateSubmissionForCompanyJob(companyUserId, jobId, submission)
+      .catch((error) => {
+        console.error('Candidate submission evaluation failed:', {
+          companyUserId,
+          jobId,
+          candidateAnonymousId,
+          error,
+        });
+      })
+      .finally(() => {
+        pendingCandidateEvaluationJobs.delete(queueKey);
+      });
+  }, 0);
+}
+
 function validateEligibilityAgainstJob(jobRow, credentialRow) {
   const eligibleCountries = parseJsonField(jobRow.eligible_countries, []).map((country) =>
     String(country).trim().toUpperCase(),
@@ -1164,10 +1215,10 @@ export async function ensureCandidatePortalSeed(candidateUser) {
       `
         INSERT INTO candidate_portal_profiles (
           candidate_user_id, birth_date, phone, education_summary, current_affiliation,
-          years_experience, employment_type, resume_file_name, resume_file_size_label,
+          language, years_experience, employment_type, resume_file_name, resume_file_size_label,
           cover_letter_file_name, cover_letter_file_size_label, share_defaults_payload, favorite_job_ids_payload
         )
-        VALUES (?, '', '', '', '', 0, '', '', '', '', '', ?, ?)
+        VALUES (?, '', '', '', '', '', 0, '', '', '', '', '', ?, ?)
       `,
       [
         candidateUserId,
@@ -1366,6 +1417,7 @@ export async function saveCandidateSettings(candidateUser, input) {
       UPDATE candidate_portal_profiles
       SET birth_date = ?,
           phone = ?,
+          language = ?,
           education_summary = ?,
           current_affiliation = ?,
           years_experience = ?,
@@ -1380,6 +1432,7 @@ export async function saveCandidateSettings(candidateUser, input) {
     [
       trimValue(form.birthDate ?? '', 16),
       trimValue(form.phone ?? '', 32),
+      trimValue(form.language ?? '', 64),
       trimValue(form.education ?? '', 255),
       trimValue(form.affiliation ?? '', 255),
       parseExperienceYears(form.careerYears),
@@ -1569,11 +1622,7 @@ export async function saveCandidateJobApplication(candidateUser, jobId, input, o
       humanVerified,
     );
 
-    await evaluateCandidateSubmissionForCompanyJob(
-      toNumber(job.company_user_id),
-      job.id,
-      evaluationSubmission,
-    );
+    queueCandidateSubmissionEvaluation(toNumber(job.company_user_id), job.id, evaluationSubmission);
   }
 
   const applicationRows = await getCandidateApplicationRows(candidateUserId);
@@ -1583,7 +1632,7 @@ export async function saveCandidateJobApplication(candidateUser, jobId, input, o
   const evaluationRows = await getCompanyEvaluationRowsByJobIds(applicationRows.map((row) => row.job_id));
 
   return {
-    message: status === 'submitted' ? '공고가 제출되었고 평가에 반영되었습니다.' : '공고가 임시 저장되었습니다.',
+    message: status === 'submitted' ? '공고가 제출되었고 평가가 백그라운드에서 시작되었습니다.' : '공고가 임시 저장되었습니다.',
     applications: applicationRows.map((row) => mapApplicationRow(row, exploreSessionMap)),
     reports: buildCandidateReports(candidateUserId, applicationRows, evaluationRows, exploreSessionMap),
   };

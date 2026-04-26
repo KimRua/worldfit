@@ -21,6 +21,7 @@ import {
   saveCandidatePortalSettings,
   verifyCandidateEligibilityWithWorldId,
   type CandidateEligibilityStatus,
+  type CandidatePortalBootstrap,
   type CandidateSessionUser,
   type WorldIdConfig,
   type WorldIdRpSignature,
@@ -123,6 +124,10 @@ type CandidateTaskDraft = {
   processResponses: CandidateProcessResponse[];
 };
 
+type CandidateTaskDraftUpdater =
+  | CandidateTaskDraft
+  | ((current: CandidateTaskDraft) => CandidateTaskDraft);
+
 type CandidateSavedApplication = CandidateTaskDraft & {
   sessionId: string;
   status: CandidatePipelineStatus;
@@ -149,6 +154,7 @@ type CandidateReport = {
   typeLabel: string;
   weights: string[];
   submittedAt: string;
+  status: 'processing' | 'completed';
   statusLabel: string;
   overallScore: number;
   percentileLabel: string;
@@ -193,6 +199,7 @@ type CandidateSettingsForm = {
   birthDate: string;
   email: string;
   phone: string;
+  language: string;
   education: string;
   affiliation: string;
   careerYears: string;
@@ -457,6 +464,7 @@ const CANDIDATE_REPORTS: CandidateReport[] = [
     typeLabel: '채용',
     weights: ['Tech 35', 'Reason 25', 'Comm 25', 'Creat 10', 'Int 5'],
     submittedAt: '제출 2026-04-18 14:22',
+    status: 'completed',
     statusLabel: '평가 완료',
     overallScore: 82.3,
     percentileLabel: '상위 12% · 5/42',
@@ -488,6 +496,7 @@ const CANDIDATE_REPORTS: CandidateReport[] = [
     typeLabel: '공모전',
     weights: ['Tech 35', 'Reason 25', 'Comm 25', 'Creat 10', 'Int 5'],
     submittedAt: '제출 2026-04-16 11:08',
+    status: 'completed',
     statusLabel: '평가 완료',
     overallScore: 79.4,
     percentileLabel: '상위 18% · 8/44',
@@ -519,6 +528,7 @@ const CANDIDATE_REPORTS: CandidateReport[] = [
     typeLabel: '오디션',
     weights: ['Tech 35', 'Reason 25', 'Comm 25', 'Creat 10', 'Int 5'],
     submittedAt: '제출 2026-04-14 09:40',
+    status: 'completed',
     statusLabel: '평가 완료',
     overallScore: 80.1,
     percentileLabel: '상위 15% · 6/40',
@@ -550,6 +560,7 @@ const CANDIDATE_REPORTS: CandidateReport[] = [
     typeLabel: '채용',
     weights: ['Tech 35', 'Reason 25', 'Comm 25', 'Creat 10', 'Int 5'],
     submittedAt: '제출 2026-04-13 17:21',
+    status: 'completed',
     statusLabel: '평가 완료',
     overallScore: 84.6,
     percentileLabel: '상위 10% · 4/38',
@@ -581,6 +592,7 @@ const CANDIDATE_REPORTS: CandidateReport[] = [
     typeLabel: '공모전',
     weights: ['Tech 35', 'Reason 25', 'Comm 25', 'Creat 10', 'Int 5'],
     submittedAt: '제출 2026-04-10 19:08',
+    status: 'completed',
     statusLabel: '평가 완료',
     overallScore: 77.8,
     percentileLabel: '상위 22% · 9/41',
@@ -612,6 +624,7 @@ const CANDIDATE_REPORTS: CandidateReport[] = [
     typeLabel: '오디션',
     weights: ['Tech 35', 'Reason 25', 'Comm 25', 'Creat 10', 'Int 5'],
     submittedAt: '제출 2026-04-08 13:02',
+    status: 'completed',
     statusLabel: '평가 완료',
     overallScore: 78.9,
     percentileLabel: '상위 20% · 7/35',
@@ -765,6 +778,7 @@ const INITIAL_CANDIDATE_SETTINGS_FORM: CandidateSettingsForm = {
   birthDate: 'YYYY-MM-DD',
   email: 'you@example.com',
   phone: '010-1234-5678',
+  language: '',
   education: '○○대학교 컴퓨터공학 학사',
   affiliation: '○○컴퍼니 · 백엔드 엔지니어',
   careerYears: '3년',
@@ -792,6 +806,29 @@ const INITIAL_CANDIDATE_SETTINGS_FORM: CandidateSettingsForm = {
     resume: true,
   },
 };
+
+const candidateSettingsLanguageOptions = [
+  'English',
+  'العربية',
+  'Hrvatski',
+  'Dansk',
+  'Nederlands',
+  'Filipino',
+  'Suomi',
+  'Français',
+  'Deutsch',
+  'Bahasa Indonesia',
+  'Italiano',
+  '日本語',
+  '한국어',
+  'Bahasa Melayu',
+  'Norsk',
+  'Polski',
+  'Português',
+  '简体中文 / 繁體中文',
+  'Español',
+  'ไทย',
+] as const;
 
 function truncateLabel(value: string, limit: number) {
   if (value.length <= limit) {
@@ -841,12 +878,12 @@ function normalizeProcessSubmissionMethodLabel(method: string) {
     return '링크 제출';
   }
 
-  if (normalized.includes('텍스트')) {
-    return '텍스트 직접 입력';
+  if (lowered.includes('pdf') || lowered.startsWith('.')) {
+    return 'PDF';
   }
 
-  if (lowered.includes('pdf') || lowered.startsWith('.')) {
-    return 'PDF(텍스트 기반)';
+  if (normalized.includes('텍스트')) {
+    return '텍스트 직접 입력';
   }
 
   return normalized;
@@ -881,13 +918,11 @@ function isLinkProcess(process: CandidateSessionProcess) {
 }
 
 function isTextProcess(process: CandidateSessionProcess) {
-  return normalizeProcessSubmissionMethodLabel(process.submissionMethod).includes('텍스트');
+  return normalizeProcessSubmissionMethodLabel(process.submissionMethod) === '텍스트 직접 입력';
 }
 
 function isFileProcess(process: CandidateSessionProcess) {
-  const normalized = normalizeProcessSubmissionMethodLabel(process.submissionMethod).toLowerCase();
-
-  return normalized.includes('pdf');
+  return normalizeProcessSubmissionMethodLabel(process.submissionMethod) === 'PDF';
 }
 
 function getProcessSubmissionBadgeLabel(process: CandidateSessionProcess) {
@@ -939,6 +974,18 @@ function areAllProcessesCompleted(processes: CandidateSessionProcess[], response
 
     return Boolean(response?.value.trim());
   });
+}
+
+function hasCompletedCandidateTaskFields(session: CandidateExploreSession, draft: CandidateTaskDraft) {
+  return areAllProcessesCompleted(session.processes, draft.processResponses);
+}
+
+function canSubmitCandidateTaskDraft(session: CandidateExploreSession, draft: CandidateTaskDraft) {
+  return Boolean(
+    hasCompletedCandidateTaskFields(session, draft) &&
+      draft.eligibilityVerified &&
+      draft.humanVerified,
+  );
 }
 
 function createEmptyTaskDraft(processes: CandidateSessionProcess[] = [], humanVerified = false): CandidateTaskDraft {
@@ -1233,7 +1280,7 @@ function CandidateHomeView({
               {reports.length === 0 ? (
                 <div className="candidate-dashboard-card__empty">
                   <strong>아직 평가 리포트가 없습니다.</strong>
-                  <p>평가가 완료되면 이곳에서 바로 확인할 수 있습니다.</p>
+                  <p>제출 후 평가가 시작되면 이곳에서 진행 상태와 결과를 확인할 수 있습니다.</p>
                 </div>
               ) : (
                 reports.slice(0, 3).map((report) => {
@@ -1248,7 +1295,7 @@ function CandidateHomeView({
                       className="candidate-dashboard-report-link"
                       onClick={() => onOpenReport(report.id)}
                     >
-                      {report.title} →
+                      {report.title} · {report.statusLabel} →
                     </button>
                   );
                 })
@@ -1751,11 +1798,8 @@ function CandidatePendingUploadView({
   const stepStage = status === 'submitted' ? 'done' : 'upload';
   const isReadOnly = status === 'submitted';
   const [draggingProcessId, setDraggingProcessId] = useState<number | null>(null);
-  const canSubmit = Boolean(
-    areAllProcessesCompleted(session.processes, draft.processResponses) &&
-      draft.eligibilityVerified &&
-      draft.humanVerified,
-  );
+  const canSubmit = hasCompletedCandidateTaskFields(session, draft);
+  const needsPreviousStepVerification = !draft.humanVerified || !draft.eligibilityVerified;
 
   return (
     <div className="candidate-pipeline">
@@ -1794,6 +1838,8 @@ function CandidatePendingUploadView({
                       <span>제출 링크</span>
                       <input
                         type="url"
+                        data-process-input="true"
+                        data-process-id={process.id}
                         placeholder="https://..."
                         value={response.value}
                         readOnly={isReadOnly}
@@ -1816,6 +1862,8 @@ function CandidatePendingUploadView({
                     <label>
                       <span>응답 작성</span>
                       <textarea
+                        data-process-input="true"
+                        data-process-id={process.id}
                         placeholder="과정에 대한 답변을 작성해주세요."
                         value={response.value}
                         readOnly={isReadOnly}
@@ -1919,6 +1967,16 @@ function CandidatePendingUploadView({
                   ? '저장 중...'
                   : '지원 정보는 서버에 안전하게 저장됩니다.'}
             </span>
+            {!isReadOnly && !canSubmit ? (
+              <p className="candidate-pipeline-checklist__message">
+                모든 필수 입력을 완료해야 제출 버튼이 활성화됩니다.
+              </p>
+            ) : null}
+            {!isReadOnly && canSubmit && needsPreviousStepVerification ? (
+              <p className="candidate-pipeline-checklist__message">
+                제출 전 이전 단계에서 본인 인증과 지원 자격 인증 상태를 다시 확인해주세요.
+              </p>
+            ) : null}
             <div className="candidate-pipeline-actions__buttons">
               <button type="button" onClick={onBackToConfirm} disabled={isSaving}>
                 이전 단계로
@@ -2011,7 +2069,7 @@ function CandidateReportsView({
       {visibleReports.length === 0 ? (
         <section className="candidate-dashboard-panel candidate-reports__empty">
           <strong>조건에 맞는 리포트가 없습니다.</strong>
-          <p>검색어나 필터를 조정하면 평가가 완료된 리포트를 다시 확인할 수 있습니다.</p>
+          <p>검색어나 필터를 조정하면 평가중이거나 완료된 리포트를 다시 확인할 수 있습니다.</p>
           <button
             type="button"
             onClick={() => {
@@ -2030,6 +2088,9 @@ function CandidateReportsView({
               <h2>{report.title}</h2>
               <p>
                 {report.organization} · {report.location} · {report.mode}
+              </p>
+              <p>
+                {report.submittedAt} · {report.statusLabel}
               </p>
               <div className="candidate-reports__divider" />
               <span className="candidate-reports__weight-label">평가 가중치</span>
@@ -2054,6 +2115,7 @@ type CandidateReportDetailViewProps = {
 };
 
 function CandidateReportDetailView({ report }: CandidateReportDetailViewProps) {
+  const isProcessing = report.status === 'processing';
   const radarAxes = ['Tech', 'Comm', 'Creat', 'Int', 'Reason'];
   const radarScores = [
     report.agentScores[0]?.score ?? 0,
@@ -2085,18 +2147,22 @@ function CandidateReportDetailView({ report }: CandidateReportDetailViewProps) {
             {report.organization} · {report.submittedAt} · {report.statusLabel}
           </p>
           <div className="candidate-report-detail__actions">
-            <button type="button" className="candidate-report-detail__action candidate-report-detail__action--primary">
+            <button
+              type="button"
+              className="candidate-report-detail__action candidate-report-detail__action--primary"
+              disabled={isProcessing}
+            >
               PDF 저장
             </button>
-            <button type="button" className="candidate-report-detail__action">
+            <button type="button" className="candidate-report-detail__action" disabled={isProcessing}>
               공유 링크
             </button>
           </div>
         </div>
 
         <div className="candidate-report-detail__score-card">
-          <span>종합 점수</span>
-          <strong>{report.overallScore.toFixed(1)}</strong>
+          <span>{isProcessing ? '평가 상태' : '종합 점수'}</span>
+          <strong>{isProcessing ? '평가중' : report.overallScore.toFixed(1)}</strong>
           <p>{report.percentileLabel}</p>
         </div>
       </section>
@@ -2104,21 +2170,32 @@ function CandidateReportDetailView({ report }: CandidateReportDetailViewProps) {
       <section className="candidate-report-detail__top-grid">
         <article className="candidate-dashboard-panel candidate-report-detail__agents">
           <h3>에이전트별 점수</h3>
-          <p>각 에이전트는 서로의 결과를 모른 채 독립 평가했습니다.</p>
+          <p>
+            {isProcessing
+              ? '제출 직후 자동 평가가 시작되었습니다. 점수와 분석은 완료되는 즉시 이 화면에 채워집니다.'
+              : '각 에이전트는 서로의 결과를 모른 채 독립 평가했습니다.'}
+          </p>
 
           <div className="candidate-report-detail__agent-list">
-            {report.agentScores.map((item) => (
-              <div key={item.label} className="candidate-report-detail__agent-row">
-                <div className="candidate-report-detail__agent-copy">
-                  <strong>{item.label}</strong>
-                  <span>{item.weightLabel}</span>
-                </div>
-                <div className="candidate-report-detail__agent-bar">
-                  <span style={{ width: `${item.score}%` }} />
-                </div>
-                <strong className="candidate-report-detail__agent-score">{item.score}</strong>
+            {isProcessing ? (
+              <div className="candidate-report-detail__insight candidate-report-detail__insight--positive">
+                <strong>…</strong>
+                <span>평가가 끝나면 에이전트별 점수와 코멘트가 여기에 표시됩니다.</span>
               </div>
-            ))}
+            ) : (
+              report.agentScores.map((item) => (
+                <div key={item.label} className="candidate-report-detail__agent-row">
+                  <div className="candidate-report-detail__agent-copy">
+                    <strong>{item.label}</strong>
+                    <span>{item.weightLabel}</span>
+                  </div>
+                  <div className="candidate-report-detail__agent-bar">
+                    <span style={{ width: `${item.score}%` }} />
+                  </div>
+                  <strong className="candidate-report-detail__agent-score">{item.score}</strong>
+                </div>
+              ))
+            )}
           </div>
         </article>
 
@@ -2151,27 +2228,44 @@ function CandidateReportDetailView({ report }: CandidateReportDetailViewProps) {
         <article className="candidate-dashboard-panel candidate-report-detail__insights">
           <h3>강점 분석</h3>
           <div className="candidate-report-detail__insight-list">
-            {report.strengths.map((item) => (
-              <div key={item} className="candidate-report-detail__insight candidate-report-detail__insight--positive">
-                <strong>✓</strong>
-                <span>{item}</span>
+            {isProcessing ? (
+              <div className="candidate-report-detail__insight candidate-report-detail__insight--positive">
+                <strong>…</strong>
+                <span>강점 분석을 생성하는 중입니다.</span>
               </div>
-            ))}
+            ) : (
+              report.strengths.map((item) => (
+                <div key={item} className="candidate-report-detail__insight candidate-report-detail__insight--positive">
+                  <strong>✓</strong>
+                  <span>{item}</span>
+                </div>
+              ))
+            )}
           </div>
         </article>
 
         <article className="candidate-dashboard-panel candidate-report-detail__insights">
           <h3>개선 방향</h3>
           <div className="candidate-report-detail__insight-list">
-            {report.improvements.map((item) => (
-              <div key={item.title} className="candidate-report-detail__insight candidate-report-detail__insight--negative">
-                <strong>✎</strong>
+            {isProcessing ? (
+              <div className="candidate-report-detail__insight candidate-report-detail__insight--negative">
+                <strong>…</strong>
                 <div>
-                  <span>{item.title}</span>
-                  <p>{item.description}</p>
+                  <span>개선 방향을 생성하는 중입니다.</span>
+                  <p>평가 완료 후 구체적인 피드백이 여기에 표시됩니다.</p>
                 </div>
               </div>
-            ))}
+            ) : (
+              report.improvements.map((item) => (
+                <div key={item.title} className="candidate-report-detail__insight candidate-report-detail__insight--negative">
+                  <strong>✎</strong>
+                  <div>
+                    <span>{item.title}</span>
+                    <p>{item.description}</p>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </article>
       </section>
@@ -2460,6 +2554,7 @@ function CandidateSettingsView({
   onSave,
   onReset,
 }: CandidateSettingsViewProps) {
+  const [isLanguageDropdownOpen, setIsLanguageDropdownOpen] = useState(false);
   const shareRows: Array<{ key: CandidateSettingsShareKey; label: string; hint: string }> = [
     { key: 'name', label: '이름', hint: '기본 공개' },
     { key: 'email', label: '이메일', hint: '기본 공개' },
@@ -2510,6 +2605,61 @@ function CandidateSettingsView({
               <span>연락처</span>
               <input value={form.phone} onChange={(event) => onFieldChange('phone', event.target.value)} />
             </label>
+          </div>
+
+          <div className="candidate-settings__divider" />
+
+          <div className="candidate-settings__section-header candidate-settings__section-header--compact">
+            <h3>시스템 설정</h3>
+          </div>
+
+          <div className="candidate-settings__grid">
+            <div className="candidate-settings__field candidate-settings__field--full company-settings-language">
+              <span>언어 설정</span>
+              <div
+                className={`company-settings-language__control${isLanguageDropdownOpen ? ' company-settings-language__control--open' : ''}`}
+              >
+                <button
+                  type="button"
+                  className="company-settings-language__trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={isLanguageDropdownOpen}
+                  onClick={() => setIsLanguageDropdownOpen((current) => !current)}
+                >
+                  <span className="company-settings-language__value">{form.language || '언어 미설정'}</span>
+                  <span
+                    className={`company-settings-language__chevron${isLanguageDropdownOpen ? ' company-settings-language__chevron--open' : ''}`}
+                    aria-hidden="true"
+                  />
+                </button>
+
+                {isLanguageDropdownOpen ? (
+                  <div
+                    className="company-settings-language__dropdown"
+                    role="listbox"
+                    aria-label="언어 설정 목록"
+                  >
+                    {candidateSettingsLanguageOptions
+                      .filter((option) => option !== form.language)
+                      .map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          role="option"
+                          aria-selected={false}
+                          className="company-settings-language__option"
+                          onClick={() => {
+                            onFieldChange('language', option);
+                            setIsLanguageDropdownOpen(false);
+                          }}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </div>
 
           <div className="candidate-settings__divider" />
@@ -2635,6 +2785,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
   const [currentReportId, setCurrentReportId] = useState<string>('');
   const [currentMatchId, setCurrentMatchId] = useState<string | null>(null);
   const [taskDraft, setTaskDraft] = useState<CandidateTaskDraft>(createEmptyTaskDraft());
+  const taskDraftRef = useRef<CandidateTaskDraft>(createEmptyTaskDraft());
   const [savedApplications, setSavedApplications] = useState<CandidateSavedApplication[]>([]);
   const [matchHistory, setMatchHistory] = useState<CandidateMatchRecord[]>([]);
   const [settingsForm, setSettingsForm] = useState<CandidateSettingsForm>(initialSettingsForm);
@@ -2681,6 +2832,17 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
   const currentSessionRef = useRef<string | null>(null);
   const favoriteSessionIdSet = new Set(favoriteSessionIds);
 
+  const updateTaskDraft = (updater: CandidateTaskDraftUpdater) => {
+    const nextDraft =
+      typeof updater === 'function'
+        ? (updater as (current: CandidateTaskDraft) => CandidateTaskDraft)(taskDraftRef.current)
+        : updater;
+
+    taskDraftRef.current = nextDraft;
+    setTaskDraft(nextDraft);
+    return nextDraft;
+  };
+
   const currentSession = currentSessionId
     ? exploreSessions.find((session) => session.id === currentSessionId) ?? null
     : null;
@@ -2690,6 +2852,66 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
   const currentReport = reports.find((report) => report.id === currentReportId) ?? reports[0] ?? null;
   const currentMatch = currentMatchId ? matchHistory.find((record) => record.id === currentMatchId) ?? null : null;
   const favoriteSessions = exploreSessions.filter((session) => favoriteSessionIdSet.has(session.id));
+
+  const applyPortalBootstrap = (
+    bootstrap: CandidatePortalBootstrap,
+    options: {
+      preservePortalUser?: boolean;
+      nextSessionId?: string | null;
+      preferredView?: CandidateView | null;
+    } = {},
+  ) => {
+    setExploreSessions(bootstrap.explore.sessions);
+    setFavoriteSessionIds(bootstrap.explore.favoriteSessionIds);
+
+    const nextApplications = bootstrap.applications.map((application) => ({
+      sessionId: application.sessionId,
+      status: application.status,
+      humanVerified: application.humanVerified,
+      eligibilityVerified: application.eligibilityVerified,
+      processResponses: application.processResponses,
+      githubUrl: application.githubUrl,
+      portfolioFile: application.portfolioFile,
+      updatedAtLabel: application.updatedAtLabel,
+    }));
+
+    setSavedApplications(nextApplications);
+    setReports(bootstrap.dashboard.reports);
+    setMatchHistory(bootstrap.dashboard.matching);
+    setSettingsForm(bootstrap.settings.form);
+    setSavedSettingsForm(bootstrap.settings.form);
+
+    if (!options.preservePortalUser) {
+      setPortalUser(user);
+    }
+
+    if (bootstrap.dashboard.reports[0]) {
+      setCurrentReportId((current) =>
+        bootstrap.dashboard.reports.some((report) => report.id === current)
+          ? current
+          : bootstrap.dashboard.reports[0].id,
+      );
+    }
+
+    if (options.nextSessionId) {
+      const nextSession = bootstrap.explore.sessions.find((session) => session.id === options.nextSessionId) ?? null;
+      const nextApplication =
+        nextApplications.find((application) => application.sessionId === options.nextSessionId) ?? null;
+
+      currentSessionRef.current = options.nextSessionId;
+      setCurrentSessionId(options.nextSessionId);
+      updateTaskDraft(
+        nextApplication
+          ? createTaskDraftFromApplication(nextApplication, nextSession?.processes ?? [])
+          : createEmptyTaskDraft(nextSession?.processes ?? []),
+      );
+      setProcessUploadFiles({});
+
+      if (options.preferredView) {
+        setActiveView(options.preferredView);
+      }
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -2729,33 +2951,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
           return;
         }
 
-        setExploreSessions(bootstrap.explore.sessions);
-        setFavoriteSessionIds(bootstrap.explore.favoriteSessionIds);
-        setSavedApplications(
-          bootstrap.applications.map((application) => ({
-            sessionId: application.sessionId,
-            status: application.status,
-            humanVerified: application.humanVerified,
-            eligibilityVerified: application.eligibilityVerified,
-            processResponses: application.processResponses,
-            githubUrl: application.githubUrl,
-            portfolioFile: application.portfolioFile,
-            updatedAtLabel: application.updatedAtLabel,
-          })),
-        );
-        setReports(bootstrap.dashboard.reports);
-        setMatchHistory(bootstrap.dashboard.matching);
-        setSettingsForm(bootstrap.settings.form);
-        setSavedSettingsForm(bootstrap.settings.form);
-        setPortalUser(user);
-
-        if (bootstrap.dashboard.reports[0]) {
-          setCurrentReportId((current) =>
-            bootstrap.dashboard.reports.some((report) => report.id === current)
-              ? current
-              : bootstrap.dashboard.reports[0].id,
-          );
-        }
+        applyPortalBootstrap(bootstrap);
       } catch (error) {
         if (!cancelled) {
           setPortalError(
@@ -2871,7 +3067,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
 
       setEligibilityStatus(result);
       setEligibilityMessage(result.reason);
-      setTaskDraft((current) => ({
+      updateTaskDraft((current) => ({
         ...current,
         eligibilityVerified: result.isEligible,
       }));
@@ -2892,55 +3088,80 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
   };
 
   const openSessionFromExplore = (sessionId: string) => {
-    const existingApplication = savedApplications.find((application) => application.sessionId === sessionId);
-    const nextSession = exploreSessions.find((session) => session.id === sessionId);
-
-    currentSessionRef.current = sessionId;
-    setCurrentSessionId(sessionId);
-    setTaskDraft(
-      existingApplication
-        ? createTaskDraftFromApplication(existingApplication, nextSession?.processes ?? [])
-        : createEmptyTaskDraft(nextSession?.processes ?? []),
-    );
-    setProcessUploadFiles({});
     setEligibilityStatus(null);
     setEligibilityMessage(null);
     setHumanVerificationMessage(null);
-    setActiveView('pendingConfirm');
-    void syncEligibilityStatus(sessionId);
+    void (async () => {
+      try {
+        setPortalError(null);
+        const bootstrap = await fetchCandidatePortalBootstrap();
+        applyPortalBootstrap(bootstrap, {
+          preservePortalUser: true,
+          nextSessionId: sessionId,
+          preferredView: 'pendingConfirm',
+        });
+      } catch (error) {
+        setPortalError(
+          error instanceof Error ? error.message : '지원자 포털 데이터를 새로고침하는 중 오류가 발생했습니다.',
+        );
+      } finally {
+        void syncEligibilityStatus(sessionId);
+      }
+    })();
   };
 
   const openApplicationFromList = (sessionId: string, preferredView: CandidateView) => {
-    const existingApplication = savedApplications.find((application) => application.sessionId === sessionId);
-    const nextSession = exploreSessions.find((session) => session.id === sessionId);
-
-    if (!existingApplication) {
-      return;
-    }
-
-    currentSessionRef.current = sessionId;
-    setCurrentSessionId(sessionId);
-    setTaskDraft(createTaskDraftFromApplication(existingApplication, nextSession?.processes ?? []));
     setProcessUploadFiles({});
     setEligibilityStatus(null);
     setEligibilityMessage(null);
     setHumanVerificationMessage(null);
-    setActiveView(preferredView);
-    void syncEligibilityStatus(sessionId);
+    void (async () => {
+      try {
+        setPortalError(null);
+        const bootstrap = await fetchCandidatePortalBootstrap();
+        const hasApplication = bootstrap.applications.some((application) => application.sessionId === sessionId);
+
+        if (!hasApplication) {
+          return;
+        }
+
+        applyPortalBootstrap(bootstrap, {
+          preservePortalUser: true,
+          nextSessionId: sessionId,
+          preferredView,
+        });
+      } catch (error) {
+        setPortalError(
+          error instanceof Error ? error.message : '지원자 포털 데이터를 새로고침하는 중 오류가 발생했습니다.',
+        );
+      } finally {
+        void syncEligibilityStatus(sessionId);
+      }
+    })();
   };
 
-  const persistApplication = async (status: CandidatePipelineStatus) => {
-    if (!currentSessionId) {
+  const persistApplication = async (
+    status: CandidatePipelineStatus,
+    options: {
+      draft?: CandidateTaskDraft;
+      jobId?: string | null;
+    } = {},
+  ) => {
+    const targetJobId = options.jobId ?? currentSessionId;
+
+    if (!targetJobId) {
       return;
     }
+
+    const activeDraft = options.draft ?? taskDraftRef.current;
 
     try {
       setIsSavingApplication(true);
       setPortalError(null);
       const response = await saveCandidateJobApplication({
-        jobId: currentSessionId,
+        jobId: targetJobId,
         status,
-        processResponses: taskDraft.processResponses,
+        processResponses: activeDraft.processResponses,
         processFiles: processUploadFiles,
       });
 
@@ -2972,7 +3193,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
       ...current,
       [processId]: file,
     }));
-    setTaskDraft((current) => ({
+    updateTaskDraft((current) => ({
       ...current,
       processResponses: current.processResponses.map((response) =>
         response.processId === processId
@@ -3007,6 +3228,87 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
     } finally {
       setIsSavingFavorites(false);
     }
+  };
+
+  const finalizeActiveInput = () => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  };
+
+  const syncTaskDraftFromVisibleProcessInputs = () => {
+    if (!currentSession) {
+      return taskDraftRef.current;
+    }
+
+    const nextValueByProcessId = new Map<number, string>();
+    const elements = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-process-input="true"]');
+
+    elements.forEach((element) => {
+      const processId = Number(element.dataset.processId ?? 0);
+
+      if (!Number.isFinite(processId) || processId <= 0) {
+        return;
+      }
+
+      nextValueByProcessId.set(processId, element.value);
+    });
+
+    if (nextValueByProcessId.size === 0) {
+      return taskDraftRef.current;
+    }
+
+    return updateTaskDraft((current) => ({
+      ...current,
+      processResponses: current.processResponses.map((response) =>
+        nextValueByProcessId.has(response.processId)
+          ? {
+              ...response,
+              value: nextValueByProcessId.get(response.processId) ?? response.value,
+            }
+          : response,
+      ),
+    }));
+  };
+
+  const submitApplicationAfterInputCommit = (status: CandidatePipelineStatus) => {
+    finalizeActiveInput();
+
+    window.setTimeout(async () => {
+      const targetSessionId = currentSessionId;
+
+      if (!targetSessionId) {
+        return;
+      }
+
+      const syncedDraft = syncTaskDraftFromVisibleProcessInputs();
+      let nextSession = currentSession;
+
+      if (status === 'submitted') {
+        try {
+          const bootstrap = await fetchCandidatePortalBootstrap();
+          nextSession = bootstrap.explore.sessions.find((session) => session.id === targetSessionId) ?? nextSession;
+        } catch (error) {
+          setPortalError(
+            error instanceof Error ? error.message : '최신 공고 정보를 확인하는 중 오류가 발생했습니다.',
+          );
+          return;
+        }
+      }
+
+      if (
+        status === 'submitted' &&
+        nextSession &&
+        !hasCompletedCandidateTaskFields(nextSession, syncedDraft)
+      ) {
+        return;
+      }
+
+      void persistApplication(status, {
+        draft: syncedDraft,
+        jobId: targetSessionId,
+      });
+    }, 0);
   };
 
   return (
@@ -3227,7 +3529,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
                 status={currentApplication?.status ?? null}
                 isSaving={isSavingApplication}
                 onProcessValueChange={(processId, value) => {
-                  setTaskDraft((current) => ({
+                  updateTaskDraft((current) => ({
                     ...current,
                     processResponses: current.processResponses.map((response) =>
                       response.processId === processId ? { ...response, value } : response,
@@ -3247,7 +3549,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
                     delete next[processId];
                     return next;
                   });
-                  setTaskDraft((current) => ({
+                  updateTaskDraft((current) => ({
                     ...current,
                     processResponses: current.processResponses.map((response) =>
                       response.processId === processId ? { ...response, file: null } : response,
@@ -3258,18 +3560,20 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
                   setActiveView('pendingConfirm');
                 }}
                 onSave={() => {
-                  void persistApplication('draft');
+                  submitApplicationAfterInputCommit('draft');
                 }}
                 onSubmit={() => {
-                  if (
-                    !areAllProcessesCompleted(currentSession.processes, taskDraft.processResponses) ||
-                    !taskDraft.eligibilityVerified ||
-                    !taskDraft.humanVerified
-                  ) {
+                  if (!hasCompletedCandidateTaskFields(currentSession, taskDraftRef.current)) {
                     return;
                   }
 
-                  void persistApplication('submitted');
+                  if (!taskDraftRef.current.humanVerified || !taskDraftRef.current.eligibilityVerified) {
+                    setPortalError('제출 전 이전 단계에서 본인 인증과 지원 자격 인증을 완료해주세요.');
+                    setActiveView('pendingConfirm');
+                    return;
+                  }
+
+                  submitApplicationAfterInputCommit('submitted');
                 }}
               />
             </>
@@ -3482,7 +3786,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
               });
               setEligibilityStatus(response.verification);
               setEligibilityMessage(response.verification.reason);
-              setTaskDraft((current) => ({
+              updateTaskDraft((current) => ({
                 ...current,
                 eligibilityVerified: response.verification.isEligible,
               }));
@@ -3602,7 +3906,7 @@ export default function CandidateDashboard({ user, onLogout }: CandidateDashboar
               }
 
               setPortalUser(response.candidateUser);
-              setTaskDraft((current) => ({
+              updateTaskDraft((current) => ({
                 ...current,
                 humanVerified: true,
               }));

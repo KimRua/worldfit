@@ -539,7 +539,7 @@ function getCompanyVerificationBadge(form: CompanyVerificationForm) {
 const companyCreateSubmissionOptions = [
   '링크 제출',
   '텍스트 직접 입력',
-  'PDF(텍스트 기반)',
+  'PDF',
   '제출 없음',
 ] as const;
 

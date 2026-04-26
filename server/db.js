@@ -86,6 +86,68 @@ async function addIndexIfMissing(tableName, indexName, definition) {
   await pool.execute(`ALTER TABLE ${tableName} ADD ${definition}`);
 }
 
+function normalizeStoredSubmissionMethod(method) {
+  const normalized = String(method ?? '').trim();
+  const lowered = normalized.toLowerCase();
+
+  if (!normalized || normalized === '제출 없음') {
+    return normalized;
+  }
+
+  if (normalized.includes('링크')) {
+    return '링크 제출';
+  }
+
+  if (lowered.includes('pdf') || lowered.startsWith('.')) {
+    return 'PDF';
+  }
+
+  if (normalized.includes('텍스트')) {
+    return '텍스트 직접 입력';
+  }
+
+  return normalized;
+}
+
+async function normalizeCompanyJobProcessSubmissionMethods() {
+  const [rows] = await pool.execute(
+    `
+      SELECT id, processes_payload
+      FROM company_jobs
+    `,
+  );
+
+  for (const row of rows) {
+    const processes = Array.isArray(row.processes_payload) ? row.processes_payload : [];
+    let changed = false;
+    const normalizedProcesses = processes.map((process) => {
+      const nextSubmissionMethod = normalizeStoredSubmissionMethod(process?.submissionMethod);
+
+      if (nextSubmissionMethod !== process?.submissionMethod) {
+        changed = true;
+      }
+
+      return {
+        ...process,
+        submissionMethod: nextSubmissionMethod,
+      };
+    });
+
+    if (!changed) {
+      continue;
+    }
+
+    await pool.execute(
+      `
+        UPDATE company_jobs
+        SET processes_payload = ?
+        WHERE id = ?
+      `,
+      [JSON.stringify(normalizedProcesses), row.id],
+    );
+  }
+}
+
 async function seedCompanyAgentCatalog() {
   if (removedCompanyAgentIds.length > 0) {
     await pool.execute(
@@ -561,6 +623,7 @@ export async function ensureDatabase() {
       phone VARCHAR(32) NOT NULL DEFAULT '',
       education_summary VARCHAR(255) NOT NULL DEFAULT '',
       current_affiliation VARCHAR(255) NOT NULL DEFAULT '',
+      language VARCHAR(64) NOT NULL DEFAULT '',
       years_experience INT NOT NULL DEFAULT 0,
       employment_type VARCHAR(120) NOT NULL DEFAULT '',
       resume_file_name VARCHAR(255) NOT NULL DEFAULT '',
@@ -576,6 +639,11 @@ export async function ensureDatabase() {
         ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await addColumnIfMissing(
+    'candidate_portal_profiles',
+    'language',
+    "VARCHAR(64) NOT NULL DEFAULT '' AFTER current_affiliation",
+  );
   await addColumnIfMissing(
     'candidate_portal_profiles',
     'favorite_job_ids_payload',
@@ -906,5 +974,6 @@ export async function ensureDatabase() {
     'uq_company_credit_charge_requests_web_derived_index',
     'UNIQUE KEY uq_company_credit_charge_requests_web_derived_index (web_derived_index)',
   );
+  await normalizeCompanyJobProcessSubmissionMethods();
   await seedAdminUser();
 }

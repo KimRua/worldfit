@@ -157,6 +157,23 @@ function formatTokenAmountFromAtomic(amountAtomic, decimals) {
   return formatDecimalString(Number(formatUnits(BigInt(amountAtomic), decimals)));
 }
 
+function calculateCreditedUsdFromQuotedAmount(charge, detectedTokenAmountAtomic) {
+  const requestedCreditUsd = toNumber(charge?.requested_credit_usd, 0);
+
+  if (requestedCreditUsd <= 0) {
+    return 0;
+  }
+
+  const expectedTokenAmountAtomic = BigInt(charge?.payment_token_amount_atomic ?? '0');
+  const actualTokenAmountAtomic = BigInt(detectedTokenAmountAtomic ?? '0');
+
+  if (expectedTokenAmountAtomic <= 0n || actualTokenAmountAtomic <= 0n) {
+    return 0;
+  }
+
+  return Number((actualTokenAmountAtomic * BigInt(requestedCreditUsd)) / expectedTokenAmountAtomic);
+}
+
 function getSupportedKeys(input) {
   return input
     .split(',')
@@ -731,7 +748,7 @@ async function refreshWebDepositChargeStatus(connection, charge) {
       ? Number(detectedTokenAmountDisplay) * quotedTokenPriceUsd
       : null;
   const creditedAmountUsd =
-    nextStatus === 'confirmed' && quotedAmountUsd != null ? Math.max(0, Math.floor(quotedAmountUsd)) : null;
+    nextStatus === 'confirmed' ? calculateCreditedUsdFromQuotedAmount(charge, cumulativeAmount) : null;
 
   await connection.execute(
     `

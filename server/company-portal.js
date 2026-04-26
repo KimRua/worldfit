@@ -978,15 +978,15 @@ function normalizeProcessSubmissionMethodLabel(method) {
     return '링크 제출';
   }
 
-  if (normalized.includes('텍스트')) {
-    return '텍스트 직접 입력';
-  }
-
   if (
     lowered.includes('pdf') ||
     lowered.startsWith('.')
   ) {
-    return 'PDF(텍스트 기반)';
+    return 'PDF';
+  }
+
+  if (normalized.includes('텍스트')) {
+    return '텍스트 직접 입력';
   }
 
   return normalized;
